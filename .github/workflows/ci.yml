@@ -1,0 +1,58 @@
+# Runs the tests on real Linux, macOS and Windows machines on every push. This is the
+# only place the macOS and MSVC builds, and real Windows consoles, get tested.
+name: CI
+on: [push, pull_request]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compilers
+        run: sudo apt-get update && sudo apt-get install -y clang gcc-mingw-w64-x86-64
+      - name: Unit tests with gcc, clang, C++, sanitizers and link modes
+        run: make test-all
+      - name: End-to-end tests in a pseudo-terminal
+        run: make e2e
+      - name: Sanitizers in a pseudo-terminal
+        run: make e2e CC=clang BUILD=build/asan CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Wshadow -Werror -g -I. -Itests -fsanitize=address,undefined -fno-sanitize-recover=all"
+      - name: Windows cross-compile
+        run: make windows
+      - name: README examples
+        run: make check-readme
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: make test CC=clang
+      - name: Compile as C++
+        run: make test-cpp CXX=clang++
+      - name: Link modes
+        run: make test-link CC=clang CXX=clang++
+      - name: End-to-end tests in a pseudo-terminal
+        run: make e2e CC=clang
+      - name: Demos
+        run: make demos CC=clang
+
+  windows-gcc:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests with MinGW
+        run: mingw32-make test-windows MINGW=gcc WINE=
+      - name: End-to-end test in a real console (ConPTY)
+        run: mingw32-make e2e-windows MINGW=gcc WINE=
+
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Unit tests and demos with MSVC, as C and as C++
+        shell: cmd
+        run: tests\build_msvc.bat
