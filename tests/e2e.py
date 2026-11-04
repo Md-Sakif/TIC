@@ -242,7 +242,7 @@ def test_rendering_reaches_the_terminal():
     t.wait_for_log("key 112 4")
     first = t.drain(0.1)
     check(b"frame-marker" in first, "text never reached the terminal")
-    check(b"\x1b[0;1;38;5;1m" in first, "style never reached the terminal")
+    check(b"\x1b[0;1;31m" in first, "style never reached the terminal")
     # An identical frame must not write anything new.
     before = len(t.output)
     t.send(b"\x10")

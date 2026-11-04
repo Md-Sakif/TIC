@@ -188,7 +188,7 @@ static void test_esc_needs_flush(void) {
 }
 
 /* Feeds bytes and returns the first event, which has to exist. */
-static cterm_event mouse_event(const char *bytes) {
+static cterm_event parse_mouse(const char *bytes) {
     cterm__parser p;
     cterm_event ev;
     memset(&p, 0, sizeof p);
@@ -200,69 +200,69 @@ static cterm_event mouse_event(const char *bytes) {
 }
 
 static void test_mouse_sgr(void) {
-    cterm_event ev = mouse_event("\x1b[<0;10;5M");
+    cterm_event ev = parse_mouse("\x1b[<0;10;5M");
     CHECK_INT(ev.action, CTERM_MOUSE_PRESS);
     CHECK_INT(ev.button, CTERM_BUTTON_LEFT);
     CHECK_INT(ev.x, 9);  /* cterm counts from 0 */
     CHECK_INT(ev.y, 4);
 
-    ev = mouse_event("\x1b[<0;10;5m");
+    ev = parse_mouse("\x1b[<0;10;5m");
     CHECK_INT(ev.action, CTERM_MOUSE_RELEASE);
     CHECK_INT(ev.button, CTERM_BUTTON_LEFT);
 
-    ev = mouse_event("\x1b[<1;1;1M");
+    ev = parse_mouse("\x1b[<1;1;1M");
     CHECK_INT(ev.button, CTERM_BUTTON_MIDDLE);
-    ev = mouse_event("\x1b[<2;1;1M");
+    ev = parse_mouse("\x1b[<2;1;1M");
     CHECK_INT(ev.button, CTERM_BUTTON_RIGHT);
 
-    ev = mouse_event("\x1b[<32;7;8M");
+    ev = parse_mouse("\x1b[<32;7;8M");
     CHECK_INT(ev.action, CTERM_MOUSE_DRAG);
     CHECK_INT(ev.button, CTERM_BUTTON_LEFT);
     CHECK_INT(ev.x, 6);
 
-    ev = mouse_event("\x1b[<35;7;8M");
+    ev = parse_mouse("\x1b[<35;7;8M");
     CHECK_INT(ev.action, CTERM_MOUSE_MOVE);
     CHECK_INT(ev.button, CTERM_BUTTON_NONE);
 
-    ev = mouse_event("\x1b[<64;3;4M");
+    ev = parse_mouse("\x1b[<64;3;4M");
     CHECK_INT(ev.action, CTERM_MOUSE_SCROLL_UP);
-    ev = mouse_event("\x1b[<65;3;4M");
+    ev = parse_mouse("\x1b[<65;3;4M");
     CHECK_INT(ev.action, CTERM_MOUSE_SCROLL_DOWN);
-    ev = mouse_event("\x1b[<66;3;4M");
+    ev = parse_mouse("\x1b[<66;3;4M");
     CHECK_INT(ev.action, CTERM_MOUSE_SCROLL_LEFT);
-    ev = mouse_event("\x1b[<67;3;4M");
+    ev = parse_mouse("\x1b[<67;3;4M");
     CHECK_INT(ev.action, CTERM_MOUSE_SCROLL_RIGHT);
 
-    ev = mouse_event("\x1b[<4;1;1M");
+    ev = parse_mouse("\x1b[<4;1;1M");
     CHECK_INT(ev.mods, CTERM_MOD_SHIFT);
-    ev = mouse_event("\x1b[<8;1;1M");
+    ev = parse_mouse("\x1b[<8;1;1M");
     CHECK_INT(ev.mods, CTERM_MOD_ALT);
-    ev = mouse_event("\x1b[<16;1;1M");
+    ev = parse_mouse("\x1b[<16;1;1M");
     CHECK_INT(ev.mods, CTERM_MOD_CTRL);
 
     /* Past column 223, which the old mouse format couldn't express. */
-    ev = mouse_event("\x1b[<0;500;300M");
+    ev = parse_mouse("\x1b[<0;500;300M");
     CHECK_INT(ev.x, 499);
     CHECK_INT(ev.y, 299);
 
     /* Coordinates of 0 don't occur, but they must not go negative. */
-    ev = mouse_event("\x1b[<0;0;0M");
+    ev = parse_mouse("\x1b[<0;0;0M");
     CHECK_INT(ev.x, 0);
     CHECK_INT(ev.y, 0);
 }
 
 static void test_mouse_legacy(void) {
     /* ESC [ M, then button + 32, x + 33, y + 33. */
-    cterm_event ev = mouse_event("\x1b[M\x20\x2A\x25");
+    cterm_event ev = parse_mouse("\x1b[M\x20\x2A\x25");
     CHECK_INT(ev.action, CTERM_MOUSE_PRESS);
     CHECK_INT(ev.button, CTERM_BUTTON_LEFT);
     CHECK_INT(ev.x, 9);
     CHECK_INT(ev.y, 4);
 
-    ev = mouse_event("\x1b[M\x23\x2A\x25");
+    ev = parse_mouse("\x1b[M\x23\x2A\x25");
     CHECK_INT(ev.action, CTERM_MOUSE_RELEASE);
 
-    ev = mouse_event("\x1b[M\x60\x21\x21");
+    ev = parse_mouse("\x1b[M\x60\x21\x21");
     CHECK_INT(ev.action, CTERM_MOUSE_SCROLL_UP);
 }
 

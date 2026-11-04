@@ -149,6 +149,21 @@ CTERM_API cterm_style cterm_style_make(cterm_color fg, cterm_color bg, uint32_t 
 /* The terminal's normal text style. */
 CTERM_API cterm_style cterm_plain(void);
 
+/* How many colours the terminal can show. cterm works this out at startup from the
+ * environment (NO_COLOR, COLORTERM and TERM). You can always draw with any colour:
+ * it's converted to the nearest one the terminal can show. */
+typedef enum cterm_color_mode {
+    CTERM_COLORS_NONE = 0,  /* attributes only, such as bold and underline */
+    CTERM_COLORS_16,
+    CTERM_COLORS_256,
+    CTERM_COLORS_RGB        /* true colour */
+} cterm_color_mode;
+
+/* Only meaningful after cterm_init(). Use set to override the detected mode, for
+ * example from a --color command-line option. */
+CTERM_API cterm_color_mode cterm_get_color_mode(void);
+CTERM_API void cterm_set_color_mode(cterm_color_mode mode);
+
 /* --- Rectangles ---------------------------------------------------------- */
 
 typedef struct cterm_rect {
@@ -227,6 +242,30 @@ CTERM_API int cterm_textn(cterm_buffer *buffer, int x, int y, cterm_style style,
 
 /* Fills a rectangle with one character. */
 CTERM_API void cterm_fill(cterm_buffer *buffer, cterm_rect area, uint32_t codepoint, cterm_style style);
+
+/* printf-style text. Returns the x position just after it, like cterm_text. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 5, 6)))
+#endif
+CTERM_API int cterm_textf(cterm_buffer *buffer, int x, int y, cterm_style style, const char *format, ...);
+
+/* The line styles for boxes and lines. Terminal fonts almost always have all of
+ * these; CTERM_BORDER_ASCII is there for those that don't. */
+typedef enum cterm_border {
+    CTERM_BORDER_SINGLE = 0,  /* corners and lines like: ┌─┐ */
+    CTERM_BORDER_DOUBLE,      /* ╔═╗ */
+    CTERM_BORDER_ROUNDED,     /* ╭─╮ */
+    CTERM_BORDER_HEAVY,       /* ┏━┓ */
+    CTERM_BORDER_ASCII        /* +-+ */
+} cterm_border;
+
+/* Draws the outline of a rectangle, leaving the inside as it was. To draw inside
+ * the box, use cterm_rect_inset(area, 1). */
+CTERM_API void cterm_box(cterm_buffer *buffer, cterm_rect area, cterm_border border, cterm_style style);
+
+/* Draws a straight line, `length` cells long, going right or down from (x, y). */
+CTERM_API void cterm_hline(cterm_buffer *buffer, int x, int y, int length, cterm_border border, cterm_style style);
+CTERM_API void cterm_vline(cterm_buffer *buffer, int x, int y, int length, cterm_border border, cterm_style style);
 
 /* Limits drawing to `area` (it can't grow past the buffer). Returns the previous
  * clip area, so you can put it back when you're done:
@@ -372,6 +411,7 @@ CTERM_API void cterm_set_mouse(cterm_mouse_mode mode);
 #define CTERM_IMPLEMENTATION_DONE
 
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -925,6 +965,77 @@ CTERM_API void cterm_fill(cterm_buffer *buffer, cterm_rect area, uint32_t cp, ct
     }
 }
 
+CTERM_API int cterm_textf(cterm_buffer *buffer, int x, int y, cterm_style style, const char *format, ...) {
+    char small[256];
+    va_list args;
+    int length;
+
+    /* Most text fits on the stack. vsnprintf reports the size it really needed, so
+     * longer text gets a second attempt with a big enough allocation. */
+    va_start(args, format);
+    length = vsnprintf(small, sizeof small, format, args);
+    va_end(args);
+    if (length < 0) return x;
+    if ((size_t)length < sizeof small) return cterm_textn(buffer, x, y, style, small, (size_t)length);
+
+    {
+        char *big = (char *)CTERM_MALLOC((size_t)length + 1);
+        if (!big) {
+            /* Show what fits rather than nothing. */
+            return cterm_textn(buffer, x, y, style, small, sizeof small - 1);
+        }
+        va_start(args, format);
+        vsnprintf(big, (size_t)length + 1, format, args);
+        va_end(args);
+        x = cterm_textn(buffer, x, y, style, big, (size_t)length);
+        CTERM_FREE(big);
+        return x;
+    }
+}
+
+/* The characters for each cterm_border. */
+static const struct {
+    uint32_t horizontal, vertical, top_left, top_right, bottom_left, bottom_right;
+} cterm__borders[] = {
+    { 0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518 }, /* single  */
+    { 0x2550, 0x2551, 0x2554, 0x2557, 0x255A, 0x255D }, /* double  */
+    { 0x2500, 0x2502, 0x256D, 0x256E, 0x2570, 0x256F }, /* rounded */
+    { 0x2501, 0x2503, 0x250F, 0x2513, 0x2517, 0x251B }, /* heavy   */
+    { '-',    '|',    '+',    '+',    '+',    '+'    }  /* ASCII   */
+};
+
+CTERM_API void cterm_hline(cterm_buffer *buffer, int x, int y, int length, cterm_border border, cterm_style style) {
+    cterm_fill(buffer, cterm_rect_make(x, y, length, 1), cterm__borders[border].horizontal, style);
+}
+
+CTERM_API void cterm_vline(cterm_buffer *buffer, int x, int y, int length, cterm_border border, cterm_style style) {
+    cterm_fill(buffer, cterm_rect_make(x, y, 1, length), cterm__borders[border].vertical, style);
+}
+
+CTERM_API void cterm_box(cterm_buffer *buffer, cterm_rect area, cterm_border border, cterm_style style) {
+    int right = area.x + area.w - 1, bottom = area.y + area.h - 1;
+    if (area.w <= 0 || area.h <= 0) return;
+
+    /* Too thin to have corners, so it's just a line. */
+    if (area.h == 1) {
+        cterm_hline(buffer, area.x, area.y, area.w, border, style);
+        return;
+    }
+    if (area.w == 1) {
+        cterm_vline(buffer, area.x, area.y, area.h, border, style);
+        return;
+    }
+
+    cterm_hline(buffer, area.x + 1, area.y, area.w - 2, border, style);
+    cterm_hline(buffer, area.x + 1, bottom, area.w - 2, border, style);
+    cterm_vline(buffer, area.x, area.y + 1, area.h - 2, border, style);
+    cterm_vline(buffer, right, area.y + 1, area.h - 2, border, style);
+    cterm_put(buffer, area.x, area.y, cterm__borders[border].top_left, style);
+    cterm_put(buffer, right, area.y, cterm__borders[border].top_right, style);
+    cterm_put(buffer, area.x, bottom, cterm__borders[border].bottom_left, style);
+    cterm_put(buffer, right, bottom, cterm__borders[border].bottom_right, style);
+}
+
 CTERM_API int cterm_buffer_line(const cterm_buffer *buffer, int y, char *out, int cap) {
     int x, m, len = 0;
     if (y < 0 || y >= buffer->height || cap <= 0) return -1;
@@ -1024,13 +1135,124 @@ static void cterm__render_state_reset(cterm__render_state *state) {
     state->style = cterm_plain();
 }
 
-/* Appends one colour to an SGR ("set style") sequence. */
+/* --- Colour fallback ----------------------------------------------------- */
+
+/* The usual xterm values of the 16 basic colours. Terminals let users change these,
+ * so they're only a best guess, but that's fine for choosing a nearest match. */
+static const unsigned char cterm__basic_rgb[16][3] = {
+    {0, 0, 0}, {205, 0, 0}, {0, 205, 0}, {205, 205, 0}, {0, 0, 238}, {205, 0, 205}, {0, 205, 205}, {229, 229, 229},
+    {127, 127, 127}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {92, 92, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}
+};
+
+/* Colours 16-231 form a 6x6x6 cube using these levels for each of red, green, blue. */
+static const unsigned char cterm__cube_levels[6] = { 0, 95, 135, 175, 215, 255 };
+
+static int cterm__color_distance(int r1, int g1, int b1, int r2, int g2, int b2) {
+    return (r1 - r2) * (r1 - r2) + (g1 - g2) * (g1 - g2) + (b1 - b2) * (b1 - b2);
+}
+
+/* The nearest palette colour above 15, trying both the cube and the grey ramp. */
+static int cterm__rgb_to_256(int r, int g, int b) {
+    int ri = 0, gi = 0, bi = 0, i, grey_index, grey_level, cube_distance, grey_distance;
+
+    for (i = 0; i < 6; i++) {
+        if (abs(cterm__cube_levels[i] - r) < abs(cterm__cube_levels[ri] - r)) ri = i;
+        if (abs(cterm__cube_levels[i] - g) < abs(cterm__cube_levels[gi] - g)) gi = i;
+        if (abs(cterm__cube_levels[i] - b) < abs(cterm__cube_levels[bi] - b)) bi = i;
+    }
+    cube_distance = cterm__color_distance(r, g, b, cterm__cube_levels[ri], cterm__cube_levels[gi], cterm__cube_levels[bi]);
+
+    /* Colours 232-255 are greys: 8, 18, 28, ... 238. */
+    grey_index = ((r + g + b) / 3 - 3) / 10;
+    if (grey_index < 0) grey_index = 0;
+    if (grey_index > 23) grey_index = 23;
+    grey_level = 8 + grey_index * 10;
+    grey_distance = cterm__color_distance(r, g, b, grey_level, grey_level, grey_level);
+
+    if (grey_distance < cube_distance) return 232 + grey_index;
+    return 16 + 36 * ri + 6 * gi + bi;
+}
+
+/* The RGB value of a palette colour. */
+static void cterm__256_to_rgb(int index, int *r, int *g, int *b) {
+    if (index < 16) {
+        *r = cterm__basic_rgb[index][0];
+        *g = cterm__basic_rgb[index][1];
+        *b = cterm__basic_rgb[index][2];
+    } else if (index < 232) {
+        index -= 16;
+        *r = cterm__cube_levels[index / 36];
+        *g = cterm__cube_levels[(index / 6) % 6];
+        *b = cterm__cube_levels[index % 6];
+    } else {
+        *r = *g = *b = 8 + (index - 232) * 10;
+    }
+}
+
+static int cterm__rgb_to_16(int r, int g, int b) {
+    int best = 0, best_distance = -1, i;
+    for (i = 0; i < 16; i++) {
+        int distance = cterm__color_distance(r, g, b, cterm__basic_rgb[i][0], cterm__basic_rgb[i][1], cterm__basic_rgb[i][2]);
+        if (best_distance < 0 || distance < best_distance) {
+            best = i;
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+/* Converts a colour to the nearest one a terminal in this mode can show. */
+static cterm_color cterm__downgrade(cterm_color color, cterm_color_mode mode) {
+    int is_rgb = (color & 0xFF000000u) == 0x02000000u;
+    int r, g, b;
+
+    if (color == CTERM_DEFAULT || mode == CTERM_COLORS_RGB) return color;
+    if (mode == CTERM_COLORS_NONE) return CTERM_DEFAULT;
+
+    if (is_rgb) {
+        r = (int)((color >> 16) & 0xFFu);
+        g = (int)((color >> 8) & 0xFFu);
+        b = (int)(color & 0xFFu);
+        if (mode == CTERM_COLORS_256) return CTERM_COLOR256(cterm__rgb_to_256(r, g, b));
+        return CTERM_COLOR256(cterm__rgb_to_16(r, g, b));
+    }
+
+    /* A palette colour in 16-colour mode. Below 16, there's nothing to do. */
+    if (mode == CTERM_COLORS_16 && (color & 0xFFu) >= 16) {
+        cterm__256_to_rgb((int)(color & 0xFFu), &r, &g, &b);
+        return CTERM_COLOR256(cterm__rgb_to_16(r, g, b));
+    }
+    return color;
+}
+
+/* Works out the colour support from environment variables (NULL if unset). It's
+ * separate from getenv() so tests can try every combination. */
+static cterm_color_mode cterm__color_mode_from_env(const char *no_color, const char *colorterm, const char *term) {
+    /* no-color.org: any non-empty value of NO_COLOR means no colour. */
+    if (no_color && no_color[0]) return CTERM_COLORS_NONE;
+    if (term && strcmp(term, "dumb") == 0) return CTERM_COLORS_NONE;
+    if (colorterm && (strcmp(colorterm, "truecolor") == 0 || strcmp(colorterm, "24bit") == 0)) return CTERM_COLORS_RGB;
+    if (term && (strstr(term, "truecolor") || strstr(term, "24bit") || strstr(term, "direct"))) return CTERM_COLORS_RGB;
+    if (term && strstr(term, "256")) return CTERM_COLORS_256;
+    return CTERM_COLORS_16;
+}
+
+/* Appends one colour to an SGR ("set style") sequence. The basic 16 use the original
+ * short codes, which are the only ones the oldest terminals understand. */
 static void cterm__sgr_color(cterm__sb *out, cterm_color color, int background) {
     uint32_t kind = color & 0xFF000000u;
     if (color == CTERM_DEFAULT) return; /* the reset at the start of the sequence covers it */
     if (kind == 0x01000000u) {
-        cterm__sb_str(out, background ? ";48;5;" : ";38;5;");
-        cterm__sb_int(out, (int)(color & 0xFFu));
+        int index = (int)(color & 0xFFu);
+        cterm__sb_str(out, ";");
+        if (index < 8) {
+            cterm__sb_int(out, (background ? 40 : 30) + index);
+        } else if (index < 16) {
+            cterm__sb_int(out, (background ? 100 : 90) + index - 8);
+        } else {
+            cterm__sb_str(out, background ? "48;5;" : "38;5;");
+            cterm__sb_int(out, index);
+        }
     } else {
         cterm__sb_str(out, background ? ";48;2;" : ";38;2;");
         cterm__sb_int(out, (int)((color >> 16) & 0xFFu));
@@ -1043,7 +1265,7 @@ static void cterm__sgr_color(cterm__sb *out, cterm_color color, int background) 
 
 /* Sends a whole style. Every sequence starts with 0 (reset), so nothing can
  * carry over from the previous style by accident. */
-static void cterm__sgr_style(cterm__sb *out, cterm_style style) {
+static void cterm__sgr_style(cterm__sb *out, cterm_style style, cterm_color_mode mode) {
     cterm__sb_str(out, "\x1b[0");
     if (style.attrs & CTERM_BOLD)      cterm__sb_str(out, ";1");
     if (style.attrs & CTERM_DIM)       cterm__sb_str(out, ";2");
@@ -1052,8 +1274,8 @@ static void cterm__sgr_style(cterm__sb *out, cterm_style style) {
     if (style.attrs & CTERM_BLINK)     cterm__sb_str(out, ";5");
     if (style.attrs & CTERM_REVERSE)   cterm__sb_str(out, ";7");
     if (style.attrs & CTERM_STRIKE)    cterm__sb_str(out, ";9");
-    cterm__sgr_color(out, style.fg, 0);
-    cterm__sgr_color(out, style.bg, 1);
+    cterm__sgr_color(out, cterm__downgrade(style.fg, mode), 0);
+    cterm__sgr_color(out, cterm__downgrade(style.bg, mode), 1);
     cterm__sb_str(out, "m");
 }
 
@@ -1084,7 +1306,7 @@ static int cterm__cell_equal(const cterm_cell *a, const cterm_cell *b) {
  * With `full` set, the screen is cleared first and everything is repainted,
  * which recovers from a resize or from anything else writing to the screen. */
 static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffer *back,
-                          cterm__render_state *state, int full) {
+                          cterm__render_state *state, cterm_color_mode mode, int full) {
     int x, y, painting = 0;
 
     if (full) {
@@ -1122,7 +1344,7 @@ static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffe
             cterm__render_move(out, state, x, y);
 
             if (!state->style_known || !cterm__style_equal(state->style, want->style)) {
-                cterm__sgr_style(out, want->style);
+                cterm__sgr_style(out, want->style, mode);
                 state->style = want->style;
                 state->style_known = 1;
             }
@@ -2039,6 +2261,7 @@ static struct {
     cterm__sb out;
     cterm__render_state render;
     int repaint; /* the next present must repaint everything */
+    cterm_color_mode color_mode;
     cterm__parser parser;
     uint64_t pending_since; /* when bytes last arrived for an incomplete sequence */
 } cterm__term;
@@ -2066,6 +2289,13 @@ CTERM_API int cterm_init(void) {
     }
     cterm__render_state_reset(&cterm__term.render);
     cterm__term.repaint = 1;
+#if defined(_WIN32)
+    /* Any Windows console that got this far handles escape sequences, and with them
+     * true colour. TERM usually isn't set there, so it can't be asked. */
+    cterm__term.color_mode = cterm__color_mode_from_env(getenv("NO_COLOR"), "truecolor", NULL);
+#else
+    cterm__term.color_mode = cterm__color_mode_from_env(getenv("NO_COLOR"), getenv("COLORTERM"), getenv("TERM"));
+#endif
     cterm__term.active = 1;
     cterm__plat_write(CTERM__ENTER_SEQUENCE, strlen(CTERM__ENTER_SEQUENCE));
     return 0;
@@ -2093,11 +2323,21 @@ CTERM_API void cterm_redraw(void) {
     cterm__term.repaint = 1;
 }
 
+CTERM_API cterm_color_mode cterm_get_color_mode(void) {
+    return cterm__term.color_mode;
+}
+
+CTERM_API void cterm_set_color_mode(cterm_color_mode mode) {
+    cterm__term.color_mode = mode;
+    cterm__term.repaint = 1; /* everything on screen used the old colours */
+}
+
 CTERM_API int cterm_present(void) {
     if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
 
     cterm__term.out.len = 0;
-    cterm__render(&cterm__term.out, &cterm__term.front, &cterm__term.back, &cterm__term.render, cterm__term.repaint);
+    cterm__render(&cterm__term.out, &cterm__term.front, &cterm__term.back, &cterm__term.render,
+                  cterm__term.color_mode, cterm__term.repaint);
     cterm__term.repaint = 0;
 
     if (cterm__term.out.failed) {

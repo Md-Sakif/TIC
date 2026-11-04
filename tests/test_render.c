@@ -30,7 +30,7 @@ static void fixture_free(fixture *f) {
 /* Renders one frame and returns how many bytes it took. */
 static size_t present(fixture *f, int full) {
     f->out.len = 0;
-    cterm__render(&f->out, f->front, f->back, &f->state, full);
+    cterm__render(&f->out, f->front, f->back, &f->state, CTERM_COLORS_RGB, full);
     vt_feed(&f->term, f->out.data, f->out.len);
     return f->out.len;
 }
