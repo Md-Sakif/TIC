@@ -388,6 +388,201 @@ typedef enum cterm_mouse_mode {
 
 CTERM_API void cterm_set_mouse(cterm_mouse_mode mode);
 
+/* The UI layer below is optional. Define CTERM_NO_UI to leave it out. */
+#ifndef CTERM_NO_UI
+
+/* --- Layout -------------------------------------------------------------- */
+
+/* Sizes for cterm_split_rows and cterm_split_columns:
+ *
+ *   CTERM_FIXED(n)     exactly n cells
+ *   CTERM_PERCENT(p)   p percent of the space
+ *   CTERM_FILL(w)      a share of whatever is left over, in proportion to w. Two
+ *                      CTERM_FILL(1) get half each; CTERM_FILL(2) gets twice the
+ *                      space of CTERM_FILL(1).
+ *
+ * If there's not enough room, children near the end get less, down to nothing. */
+#define CTERM_FIXED(n)    (n)
+#define CTERM_PERCENT(p)  (1000000 + (p))
+#define CTERM_FILL(w)     (-(w))
+
+/* Splits `area` into `count` rows or columns, stored in `out`, with `gap` empty
+ * cells between them. Nest calls to build any layout:
+ *
+ *     int rows[] = { CTERM_FIXED(1), CTERM_FILL(1), CTERM_FIXED(1) };
+ *     cterm_rect row[3];
+ *     cterm_split_rows(cterm_bounds(screen), 0, rows, 3, row);
+ *     // row[0] is a header, row[1] the main area, and row[2] a footer. */
+CTERM_API void cterm_split_rows(cterm_rect area, int gap, const int *sizes, int count, cterm_rect *out);
+CTERM_API void cterm_split_columns(cterm_rect area, int gap, const int *sizes, int count, cterm_rect *out);
+
+/* --- Widgets ------------------------------------------------------------- */
+
+/* The widgets are "immediate mode": you don't create and manage widget objects.
+ * Each frame you call a function that draws the widget and handles the current
+ * event, and it tells you what happened:
+ *
+ *     cterm_ui ui;
+ *     cterm_ui_init(&ui);
+ *     ...
+ *     cterm_clear(screen);
+ *     cterm_ui_begin(&ui, screen, &event);
+ *     if (cterm_ui_input(&ui, area, &name) & CTERM_UI_SUBMITTED) save(name.text);
+ *     cterm_ui_end(&ui);
+ *     cterm_present();
+ *
+ * Your app owns the state (cterm_input, cterm_list, cterm_scroll). A widget is
+ * identified by the address of its state, so that state must stay in the same
+ * place between frames: make it static, or part of a long-lived struct. */
+
+/* What a widget call can return. Combine with &. */
+enum {
+    CTERM_UI_CHANGED   = 1 << 0, /* the text or selection changed */
+    CTERM_UI_SUBMITTED = 1 << 1  /* the user pressed Enter */
+};
+
+/* The styles widgets draw with. cterm_ui_init sets defaults that work even with no
+ * colour. Change any of them in ui.theme whenever you like. */
+typedef struct cterm_ui_theme {
+    cterm_style input;              /* a text input */
+    cterm_style input_focused;
+    cterm_style placeholder;        /* hint text in an empty input */
+    cterm_style list_item;
+    cterm_style list_selected;      /* the selected row, in a focused list */
+    cterm_style list_selected_idle; /* the selected row, in an unfocused list */
+    cterm_style scrollbar_track;
+    cterm_style scrollbar_thumb;
+    cterm_style scrollbar_thumb_focused;
+} cterm_ui_theme;
+
+/* The largest number of widgets Tab can reach and clicks can focus. Extra widgets
+ * still draw, but can't be focused. */
+#ifndef CTERM_UI_MAX_WIDGETS
+  #define CTERM_UI_MAX_WIDGETS 128
+#endif
+
+typedef struct cterm_ui_slot {
+    const void *id;
+    cterm_rect area;
+} cterm_ui_slot;
+
+/* Everything the UI remembers between frames. Create one with cterm_ui_init and
+ * use it for the life of the app. Only `theme` is meant to be touched directly. */
+typedef struct cterm_ui {
+    cterm_ui_theme theme;
+
+    /* Private. */
+    cterm_buffer *buffer;
+    const cterm_event *event;
+    int event_used;
+    const void *focus;
+    int focus_seen;
+    const void *mouse_capture;
+    cterm_ui_slot widgets[2][CTERM_UI_MAX_WIDGETS]; /* last frame's and this frame's */
+    int widget_count[2];
+    int current;                                    /* which of the two is this frame's */
+} cterm_ui;
+
+CTERM_API void cterm_ui_init(cterm_ui *ui);
+
+/* Starts a frame that draws on `buffer` and handles `event`. Pass the event from
+ * cterm_poll, or NULL if there's none. Tab and Shift+Tab move the focus here. */
+CTERM_API void cterm_ui_begin(cterm_ui *ui, cterm_buffer *buffer, const cterm_event *event);
+CTERM_API void cterm_ui_end(cterm_ui *ui);
+
+/* 1 if a widget used this frame's event. Check it after your widgets to find out
+ * whether a key is still yours to handle. */
+CTERM_API int cterm_ui_event_handled(const cterm_ui *ui);
+
+/* Moves the focus to the widget with this state, or asks about it. The first
+ * focusable widget drawn gets the focus if nothing has it. */
+CTERM_API void cterm_ui_focus(cterm_ui *ui, const void *widget_state);
+CTERM_API int cterm_ui_has_focus(const cterm_ui *ui, const void *widget_state);
+
+/* --- Text input ---------------------------------------------------------- */
+
+/* A one-line text field. `text` is an ordinary NUL-terminated UTF-8 string that you
+ * can read at any time. */
+typedef struct cterm_input {
+    char *text;              /* your storage */
+    size_t capacity;         /* its size in bytes, including the NUL */
+    size_t cursor;           /* the byte offset of the cursor in text */
+    int scroll;              /* cells hidden off the left edge */
+    const char *placeholder; /* optional hint shown while the field is empty */
+    uint32_t mask;           /* optional: draw this character instead of the text,
+                                for example '*' for a password */
+} cterm_input;
+
+/* Sets up an input using `storage`, which it empties. */
+CTERM_API void cterm_input_init(cterm_input *input, char *storage, size_t capacity);
+
+/* Replaces the text, cutting it short if it doesn't fit, and moves the cursor to the
+ * end. Control characters are removed, as they are for typing and pasting. */
+CTERM_API void cterm_input_set(cterm_input *input, const char *utf8);
+
+/* Draws the input on the top row of `area` and handles the event. Returns
+ * CTERM_UI_ flags.
+ *
+ * Keys: arrows, Home/End, Backspace, Delete, Ctrl+A/E (start/end), Ctrl+Left/Right
+ * and Alt+B/F (by word), Ctrl+W and Alt+Backspace (delete word), Ctrl+U/K (delete
+ * to start/end), and Enter (submit). */
+CTERM_API int cterm_ui_input(cterm_ui *ui, cterm_rect area, cterm_input *input);
+
+/* --- List ---------------------------------------------------------------- */
+
+/* A scrolling list with one selected row. A struct of zeros is a valid start. You
+ * can set `selected` yourself: the list scrolls to show it. */
+typedef struct cterm_list {
+    int selected;
+    int scroll;           /* the first visible row */
+    int last_selected;    /* private */
+    int last_height;      /* private */
+} cterm_list;
+
+/* Draws a list of strings. Returns CTERM_UI_ flags: CHANGED means the selection
+ * moved, and SUBMITTED means Enter was pressed on the selected row.
+ *
+ * Keys: Up/Down, PageUp/PageDown, Home/End, Enter. Clicking selects a row, and the
+ * mouse wheel scrolls. */
+CTERM_API int cterm_ui_list(cterm_ui *ui, cterm_rect area, cterm_list *list, const char *const *items, int count);
+
+/* The same, but it asks for each row's text when it's needed, so a huge or computed
+ * list doesn't have to exist in memory. The returned string only has to stay valid
+ * until the next call. It's only called for visible rows. */
+typedef const char *(*cterm_list_text_fn)(int index, void *user_data);
+CTERM_API int cterm_ui_list_fn(cterm_ui *ui, cterm_rect area, cterm_list *list, int count,
+                               cterm_list_text_fn text, void *user_data);
+
+/* --- Scrollable view ----------------------------------------------------- */
+
+/* A window onto content larger than the space available. A struct of zeros is a
+ * valid start. */
+typedef struct cterm_scroll {
+    int x, y;                  /* how far it's scrolled */
+
+    /* Private. */
+    cterm_rect viewport;
+    cterm_rect saved_clip;
+    int content_height;
+    int bar_visible;
+} cterm_scroll;
+
+/* Starts a scrollable area. Pass the full size of your content; a content_width of
+ * 0 means "as wide as the view". Draw between begin and end, positioned relative to
+ * the returned rectangle, as if it were all visible: cterm clips what isn't.
+ *
+ *     cterm_rect c = cterm_ui_scroll_begin(&ui, area, &scroll, 0, line_count);
+ *     for (i = 0; i < line_count; i++) cterm_text(screen, c.x, c.y + i, style, lines[i]);
+ *     cterm_ui_scroll_end(&ui, &scroll);
+ *
+ * Keys: arrows, PageUp/PageDown, Home/End. The mouse wheel and scrollbar also work.
+ * Other widgets can go inside, but the wheel always scrolls the outer view. */
+CTERM_API cterm_rect cterm_ui_scroll_begin(cterm_ui *ui, cterm_rect area, cterm_scroll *scroll,
+                                           int content_width, int content_height);
+CTERM_API void cterm_ui_scroll_end(cterm_ui *ui, cterm_scroll *scroll);
+
+#endif /* CTERM_NO_UI */
+
 #ifdef __cplusplus
 }
 #endif
@@ -2438,6 +2633,720 @@ CTERM_API void cterm_set_mouse(cterm_mouse_mode mode) {
     cterm__plat_write(off, sizeof off - 1);
     cterm__plat_write(on, strlen(on));
 }
+
+#ifndef CTERM_NO_UI
+
+/* ========================================================================= *
+ * LAYOUT
+ * ========================================================================= */
+
+/* Does the work for both split directions, thinking only in terms of one axis. */
+static void cterm__split(cterm_rect area, int gap, const int *sizes, int count, cterm_rect *out, int vertical) {
+    int extent = vertical ? area.h : area.w;
+    int position = vertical ? area.y : area.x;
+    int available, remaining, total_weight = 0, leftover_given = 0, i;
+    int fill_space;
+
+    if (count <= 0) return;
+    if (gap < 0) gap = 0;
+    available = extent - gap * (count - 1);
+    if (available < 0) available = 0;
+
+    /* First the sizes that don't depend on anything else. */
+    remaining = available;
+    for (i = 0; i < count; i++) {
+        if (sizes[i] < 0) {
+            total_weight += -sizes[i];
+        } else {
+            int wanted = sizes[i] >= 1000000 ? available * (sizes[i] - 1000000) / 100 : sizes[i];
+            remaining -= wanted;
+        }
+    }
+    fill_space = remaining > 0 ? remaining : 0;
+
+    /* Then share what's left, and hand out sizes from the start. `room` is what's
+     * really left, so when things don't fit, later children come up short. */
+    remaining = available;
+    for (i = 0; i < count; i++) {
+        int size;
+        if (sizes[i] < 0) {
+            size = (int)((long long)fill_space * -sizes[i] / total_weight);
+            leftover_given += size;
+        } else if (sizes[i] >= 1000000) {
+            size = available * (sizes[i] - 1000000) / 100;
+        } else {
+            size = sizes[i];
+        }
+        if (size > remaining) size = remaining;
+        remaining -= size;
+
+        if (vertical) out[i] = cterm_rect_make(area.x, position, area.w, size);
+        else out[i] = cterm_rect_make(position, area.y, size, area.h);
+        position += size + gap;
+    }
+
+    /* Division rounds down, so a few cells can be left over. Give them to the first
+     * fill children, moving everything after them along. */
+    {
+        int spare = fill_space - leftover_given;
+        int shift = 0;
+        for (i = 0; i < count; i++) {
+            int extra = 0;
+            if (sizes[i] < 0 && spare > 0) {
+                extra = 1;
+                spare--;
+            }
+            if (vertical) {
+                out[i].y += shift;
+                out[i].h += extra;
+            } else {
+                out[i].x += shift;
+                out[i].w += extra;
+            }
+            shift += extra;
+        }
+    }
+}
+
+CTERM_API void cterm_split_rows(cterm_rect area, int gap, const int *sizes, int count, cterm_rect *out) {
+    cterm__split(area, gap, sizes, count, out, 1);
+}
+
+CTERM_API void cterm_split_columns(cterm_rect area, int gap, const int *sizes, int count, cterm_rect *out) {
+    cterm__split(area, gap, sizes, count, out, 0);
+}
+
+/* ========================================================================= *
+ * WIDGET CORE
+ *
+ * How focus works without widget objects: every focusable widget adds itself to a
+ * list as it's drawn, and two lists are kept, last frame's and this frame's. Tab and
+ * mouse clicks are handled in cterm_ui_begin using last frame's list, because by the
+ * time this frame's widgets run they all need to agree on who has the focus.
+ * ========================================================================= */
+
+#define CTERM__UI_WHEEL_STEP 3 /* rows moved per notch of the mouse wheel */
+
+CTERM_API void cterm_ui_init(cterm_ui *ui) {
+    memset(ui, 0, sizeof *ui);
+    ui->theme.input                   = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_UNDERLINE);
+    ui->theme.input_focused           = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_UNDERLINE | CTERM_BOLD);
+    ui->theme.placeholder             = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_UNDERLINE | CTERM_DIM);
+    ui->theme.list_item               = cterm_plain();
+    ui->theme.list_selected           = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_REVERSE);
+    ui->theme.list_selected_idle      = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_BOLD);
+    ui->theme.scrollbar_track         = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_DIM);
+    ui->theme.scrollbar_thumb         = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_DIM);
+    ui->theme.scrollbar_thumb_focused = cterm_plain();
+}
+
+/* Moves the focus one step through last frame's widgets. */
+static void cterm__ui_move_focus(cterm_ui *ui, int backwards) {
+    const cterm_ui_slot *slots = ui->widgets[ui->current];
+    int count = ui->widget_count[ui->current];
+    int index = -1, i;
+    for (i = 0; i < count; i++) {
+        if (slots[i].id == ui->focus) index = i;
+    }
+    if (index < 0) index = backwards ? 0 : -1; /* nothing focused: start from the edge */
+    ui->focus = slots[(index + (backwards ? -1 : 1) + count) % count].id;
+}
+
+CTERM_API void cterm_ui_begin(cterm_ui *ui, cterm_buffer *buffer, const cterm_event *event) {
+    ui->buffer = buffer;
+    ui->event = event && event->type != CTERM_EVENT_NONE ? event : NULL;
+    ui->event_used = 0;
+
+    if (ui->event) {
+        int count = ui->widget_count[ui->current];
+        if (event->type == CTERM_EVENT_KEY && event->key == CTERM_KEY_TAB &&
+            !(event->mods & (CTERM_MOD_CTRL | CTERM_MOD_ALT)) && count > 0) {
+            cterm__ui_move_focus(ui, event->mods & CTERM_MOD_SHIFT);
+            ui->event_used = 1;
+        } else if (event->type == CTERM_EVENT_MOUSE && event->action == CTERM_MOUSE_PRESS) {
+            /* The last match wins, because a widget inside a scroll view comes after
+             * the view itself. The click isn't used up: the widget handles it too. */
+            int i;
+            for (i = 0; i < count; i++) {
+                const cterm_ui_slot *slot = &ui->widgets[ui->current][i];
+                if (cterm_rect_contains(slot->area, event->x, event->y)) ui->focus = slot->id;
+            }
+        }
+    }
+
+    /* Start collecting this frame's widgets in the other list. */
+    ui->current = !ui->current;
+    ui->widget_count[ui->current] = 0;
+    ui->focus_seen = 0;
+}
+
+CTERM_API void cterm_ui_end(cterm_ui *ui) {
+    /* If the focused widget wasn't drawn this frame, it's gone. Give the focus to the
+     * first widget, which will show it from the next frame on. */
+    if (ui->focus && !ui->focus_seen) {
+        ui->focus = ui->widget_count[ui->current] > 0 ? ui->widgets[ui->current][0].id : NULL;
+    }
+    if (ui->event && ui->event->type == CTERM_EVENT_MOUSE && ui->event->action == CTERM_MOUSE_RELEASE) {
+        ui->mouse_capture = NULL;
+    }
+    ui->buffer = NULL;
+}
+
+CTERM_API int cterm_ui_event_handled(const cterm_ui *ui) {
+    return ui->event_used;
+}
+
+CTERM_API void cterm_ui_focus(cterm_ui *ui, const void *widget_state) {
+    ui->focus = widget_state;
+    ui->focus_seen = 1;
+}
+
+CTERM_API int cterm_ui_has_focus(const cterm_ui *ui, const void *widget_state) {
+    return ui->focus == widget_state;
+}
+
+/* Adds a widget to this frame's list and returns 1 if it has the focus. */
+static int cterm__ui_register(cterm_ui *ui, const void *id, cterm_rect area) {
+    if (ui->widget_count[ui->current] < CTERM_UI_MAX_WIDGETS) {
+        cterm_ui_slot *slot = &ui->widgets[ui->current][ui->widget_count[ui->current]++];
+        slot->id = id;
+        slot->area = cterm_rect_intersect(area, ui->buffer->clip); /* the part you can click */
+    }
+    if (!ui->focus) ui->focus = id;
+    if (ui->focus == id) {
+        ui->focus_seen = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* This frame's event if it's unused and is a key or paste for a focused widget. */
+static const cterm_event *cterm__ui_keyboard_event(const cterm_ui *ui, int focused) {
+    if (!focused || !ui->event || ui->event_used) return NULL;
+    if (ui->event->type != CTERM_EVENT_KEY && ui->event->type != CTERM_EVENT_PASTE) return NULL;
+    return ui->event;
+}
+
+/* This frame's event if it's an unused mouse event over the visible part of `area`. */
+static const cterm_event *cterm__ui_mouse_event(const cterm_ui *ui, cterm_rect area) {
+    if (!ui->event || ui->event_used || ui->event->type != CTERM_EVENT_MOUSE) return NULL;
+    if (!cterm_rect_contains(cterm_rect_intersect(area, ui->buffer->clip), ui->event->x, ui->event->y)) return NULL;
+    return ui->event;
+}
+
+/* Narrows the clip area to also fit inside `area`. Returns the old one to restore. */
+static cterm_rect cterm__ui_narrow_clip(cterm_buffer *buffer, cterm_rect area) {
+    return cterm_set_clip(buffer, cterm_rect_intersect(area, buffer->clip));
+}
+
+static int cterm__clamp(int value, int low, int high) {
+    if (value > high) value = high;
+    if (value < low) value = low;
+    return value;
+}
+
+/* Handles the scrollbar in a column. A press on the bar jumps there, and holding
+ * the button drags. `*offset` runs from 0 to content - height. Returns 1 if it used
+ * the event. */
+static int cterm__ui_scrollbar_mouse(cterm_ui *ui, cterm_rect bar, const void *id, int content, int *offset) {
+    const cterm_event *ev = ui->event;
+    int max_offset = content - bar.h;
+    int on_bar, captured;
+
+    if (!ev || ui->event_used || ev->type != CTERM_EVENT_MOUSE || bar.h <= 0 || max_offset <= 0) return 0;
+
+    on_bar = ev->action == CTERM_MOUSE_PRESS && cterm__ui_mouse_event(ui, bar) != NULL;
+    captured = ui->mouse_capture == id && ev->action == CTERM_MOUSE_DRAG;
+    if (!on_bar && !captured) return 0;
+
+    if (on_bar) ui->mouse_capture = id;
+    *offset = bar.h > 1 ? (ev->y - bar.y) * max_offset / (bar.h - 1) : 0;
+    *offset = cterm__clamp(*offset, 0, max_offset);
+    ui->event_used = 1;
+    return 1;
+}
+
+/* Draws a scrollbar. The thumb shows which part of the content is visible, and its
+ * size shows how much. */
+static void cterm__ui_scrollbar_draw(cterm_ui *ui, cterm_rect bar, int content, int offset, int focused) {
+    int max_offset = content - bar.h;
+    int thumb_size, thumb_at, y;
+    if (bar.h <= 0 || max_offset <= 0) return;
+
+    thumb_size = (int)((long long)bar.h * bar.h / content);
+    if (thumb_size < 1) thumb_size = 1;
+    thumb_at = (int)((long long)offset * (bar.h - thumb_size) / max_offset);
+
+    for (y = 0; y < bar.h; y++) {
+        int in_thumb = y >= thumb_at && y < thumb_at + thumb_size;
+        cterm_put(ui->buffer, bar.x, bar.y + y, in_thumb ? 0x2588 : 0x2502, /* full block, line */
+                  in_thumb ? (focused ? ui->theme.scrollbar_thumb_focused : ui->theme.scrollbar_thumb)
+                           : ui->theme.scrollbar_track);
+    }
+}
+
+/* ========================================================================= *
+ * TEXT INPUT
+ *
+ * The text is ordinary UTF-8, and `cursor` is a byte offset that only ever rests on
+ * the boundary between characters. Two ideas of "one character" are used, because
+ * people expect different things from different keys:
+ *
+ *   Moving and Delete work on a cluster, a character with its combining marks, so
+ *   the cursor never lands inside something that looks like one letter.
+ *
+ *   Backspace removes one code point, so in scripts such as Bengali you can take back
+ *   a vowel sign without losing the consonant it was typed onto.
+ * ========================================================================= */
+
+/* The code point at byte `at`. */
+static uint32_t cterm__input_cp(const char *text, size_t length, size_t at, int *used) {
+    uint32_t cp = CTERM__REPLACEMENT;
+    int n = cterm__utf8_decode((const unsigned char *)text + at, length - at, &cp);
+    if (n == 0) n = (int)(length - at); /* truncated at the end: take the rest */
+    if (used) *used = n;
+    return cp;
+}
+
+/* The start of the code point before byte `at` (at > 0). */
+static size_t cterm__input_prev_char(const char *text, size_t at) {
+    at--;
+    while (at > 0 && ((unsigned char)text[at] & 0xC0) == 0x80) at--;
+    return at;
+}
+
+/* The end of the cluster starting at byte `at`. */
+static size_t cterm__input_next_cluster(const char *text, size_t length, size_t at) {
+    int used;
+    if (at >= length) return length;
+    cterm__input_cp(text, length, at, &used);
+    at += (size_t)used;
+    while (at < length) {
+        uint32_t cp = cterm__input_cp(text, length, at, &used);
+        if (cterm_char_width(cp) != 0) break;
+        at += (size_t)used;
+    }
+    return at;
+}
+
+/* The start of the cluster before byte `at`. */
+static size_t cterm__input_prev_cluster(const char *text, size_t length, size_t at) {
+    if (at == 0) return 0;
+    at = cterm__input_prev_char(text, at);
+    while (at > 0 && cterm_char_width(cterm__input_cp(text, length, at, NULL)) == 0) {
+        at = cterm__input_prev_char(text, at);
+    }
+    return at;
+}
+
+/* The start of the word before byte `at`: skip spaces going left, then non-spaces. */
+static size_t cterm__input_prev_word(const char *text, size_t at) {
+    while (at > 0 && text[at - 1] == ' ') at--;
+    while (at > 0 && text[at - 1] != ' ') at--;
+    return at;
+}
+
+/* The end of the word after byte `at`: skip spaces going right, then non-spaces. */
+static size_t cterm__input_next_word(const char *text, size_t length, size_t at) {
+    while (at < length && text[at] == ' ') at++;
+    while (at < length && text[at] != ' ') at++;
+    return at;
+}
+
+/* Removes the bytes from `from` to `to` and leaves the cursor at `from`. */
+static void cterm__input_erase(cterm_input *input, size_t length, size_t from, size_t to) {
+    memmove(input->text + from, input->text + to, length - to + 1); /* + 1: the NUL */
+    input->cursor = from;
+}
+
+/* Inserts UTF-8 at the cursor, stopping when it's full (never partway through a
+ * character). Invalid bytes are dropped, and line breaks and tabs become spaces,
+ * since this is a one-line field. All other control characters are dropped. Returns
+ * 1 if anything changed. */
+static int cterm__input_insert(cterm_input *input, const char *utf8, size_t n) {
+    const unsigned char *s = (const unsigned char *)utf8;
+    size_t length = strlen(input->text);
+    int changed = 0;
+
+    while (n > 0) {
+        uint32_t cp = 0;
+        char bytes[4];
+        int used = cterm__utf8_decode(s, n, &cp), size;
+
+        if (used == 0) break; /* a truncated character at the end: drop it */
+        /* A valid U+FFFD is 3 bytes. A replacement for an invalid byte has used == 1. */
+        if (cp == CTERM__REPLACEMENT && used == 1) goto next;
+
+        if (cp == '\r' && n > 1 && s[1] == '\n') goto next; /* CR LF is a single line break */
+        if (cp == '\r' || cp == '\n' || cp == '\t') cp = ' ';
+        if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) goto next;
+
+        size = cterm__utf8_encode(cp, bytes);
+        if (length + (size_t)size + 1 > input->capacity) break;
+        memmove(input->text + input->cursor + size, input->text + input->cursor, length - input->cursor + 1);
+        memcpy(input->text + input->cursor, bytes, (size_t)size);
+        input->cursor += (size_t)size;
+        length += (size_t)size;
+        changed = 1;
+
+    next:
+        s += used;
+        n -= (size_t)used;
+    }
+    return changed;
+}
+
+CTERM_API void cterm_input_init(cterm_input *input, char *storage, size_t capacity) {
+    memset(input, 0, sizeof *input);
+    input->text = storage;
+    input->capacity = capacity;
+    if (storage && capacity > 0) storage[0] = '\0';
+}
+
+CTERM_API void cterm_input_set(cterm_input *input, const char *utf8) {
+    if (!input->text || input->capacity == 0) return;
+    input->text[0] = '\0';
+    input->cursor = 0;
+    input->scroll = 0;
+    cterm__input_insert(input, utf8, strlen(utf8));
+}
+
+/* How many cells the text up to byte `end` takes on screen. */
+static int cterm__input_columns(const cterm_input *input, size_t end) {
+    int mask_width = input->mask ? cterm_char_width(input->mask) : 0;
+    int columns = 0;
+    size_t at = 0;
+    while (at < end) {
+        int used, width;
+        uint32_t cp = cterm__input_cp(input->text, end, at, &used);
+        width = cterm_char_width(cp);
+        if (input->mask && width > 0) width = mask_width;
+        columns += width;
+        at += (size_t)used;
+    }
+    return columns;
+}
+
+/* The byte offset of the cluster at a screen column, for clicks. */
+static size_t cterm__input_at_column(const cterm_input *input, size_t length, int column) {
+    size_t at = 0;
+    while (at < length) {
+        size_t next = cterm__input_next_cluster(input->text, length, at);
+        if (cterm__input_columns(input, next) > column) return at;
+        at = next;
+    }
+    return length;
+}
+
+/* Handles a key or paste. Returns CTERM_UI_ flags, and sets *used if it recognised
+ * the event. */
+static int cterm__input_handle(cterm_input *input, const cterm_event *ev, int *used) {
+    char *text = input->text;
+    size_t length = strlen(text), cursor = input->cursor;
+    int ctrl, alt, key, result = 0;
+
+    *used = 1;
+
+    if (ev->type == CTERM_EVENT_PASTE) {
+        return cterm__input_insert(input, ev->text, ev->text_length) ? CTERM_UI_CHANGED : 0;
+    }
+
+    ctrl = (ev->mods & CTERM_MOD_CTRL) != 0;
+    alt = (ev->mods & CTERM_MOD_ALT) != 0;
+    key = ev->key;
+
+    /* Plain text. Shift is fine: it's how capitals get typed. */
+    if (key < CTERM_KEY_ENTER && key >= 0x20 && !ctrl && !alt) {
+        char bytes[4];
+        int size = cterm__utf8_encode((uint32_t)key, bytes);
+        return cterm__input_insert(input, bytes, (size_t)size) ? CTERM_UI_CHANGED : 0;
+    }
+
+    /* Editing and movement. Anything that's not here goes back to the app. */
+    if (ctrl && key == 'a') input->cursor = 0;
+    else if (ctrl && key == 'e') input->cursor = length;
+    else if (key == CTERM_KEY_HOME) input->cursor = 0;
+    else if (key == CTERM_KEY_END) input->cursor = length;
+    else if (key == CTERM_KEY_LEFT && ctrl) input->cursor = cterm__input_prev_word(text, cursor);
+    else if (key == CTERM_KEY_RIGHT && ctrl) input->cursor = cterm__input_next_word(text, length, cursor);
+    else if (key == 'b' && alt) input->cursor = cterm__input_prev_word(text, cursor);
+    else if (key == 'f' && alt) input->cursor = cterm__input_next_word(text, length, cursor);
+    else if (key == CTERM_KEY_LEFT) input->cursor = cterm__input_prev_cluster(text, length, cursor);
+    else if (key == CTERM_KEY_RIGHT) input->cursor = cterm__input_next_cluster(text, length, cursor);
+    else if (key == CTERM_KEY_ENTER) result = CTERM_UI_SUBMITTED;
+    else {
+        size_t from = cursor, to = cursor;
+        if (key == CTERM_KEY_BACKSPACE && (ctrl || alt)) from = cterm__input_prev_word(text, cursor);
+        else if (ctrl && key == 'w') from = cterm__input_prev_word(text, cursor);
+        else if (key == CTERM_KEY_BACKSPACE) from = cursor > 0 ? cterm__input_prev_char(text, cursor) : 0;
+        else if (key == CTERM_KEY_DELETE && ctrl) to = cterm__input_next_word(text, length, cursor);
+        else if (key == CTERM_KEY_DELETE) to = cterm__input_next_cluster(text, length, cursor);
+        else if (ctrl && key == 'u') from = 0;
+        else if (ctrl && key == 'k') to = length;
+        else {
+            *used = 0;
+            return 0;
+        }
+        if (from != to) {
+            cterm__input_erase(input, length, from, to);
+            result = CTERM_UI_CHANGED;
+        }
+    }
+    return result;
+}
+
+CTERM_API int cterm_ui_input(cterm_ui *ui, cterm_rect area, cterm_input *input) {
+    cterm_buffer *buffer = ui->buffer;
+    const cterm_event *ev;
+    cterm_rect row = cterm_rect_make(area.x, area.y, area.w, area.h > 0 ? 1 : 0);
+    cterm_rect old_clip;
+    size_t length;
+    int focused, result = 0, cursor_column, total_columns;
+    cterm_style style;
+
+    if (!input->text || input->capacity == 0) return 0;
+    focused = cterm__ui_register(ui, input, row);
+
+    /* The app can change `text` whenever it likes, so make sure the cursor is still
+     * inside it, and on the boundary of a character. */
+    length = strlen(input->text);
+    if (input->cursor > length) input->cursor = length;
+    while (input->cursor > 0 && ((unsigned char)input->text[input->cursor] & 0xC0) == 0x80) input->cursor--;
+
+    ev = cterm__ui_keyboard_event(ui, focused);
+    if (ev) {
+        int used;
+        result = cterm__input_handle(input, ev, &used);
+        if (used) ui->event_used = 1;
+        length = strlen(input->text);
+    }
+
+    /* A click puts the cursor there. */
+    ev = cterm__ui_mouse_event(ui, row);
+    if (ev && ev->action == CTERM_MOUSE_PRESS) {
+        input->cursor = cterm__input_at_column(input, length, ev->x - row.x + input->scroll);
+        ui->event_used = 1;
+    }
+
+    /* Scroll just enough to keep the cursor visible. It needs a cell of its own, and
+     * the field shouldn't sit half empty after text is deleted. */
+    cursor_column = cterm__input_columns(input, input->cursor);
+    total_columns = cterm__input_columns(input, length);
+    if (cursor_column < input->scroll) input->scroll = cursor_column;
+    if (cursor_column >= input->scroll + row.w) input->scroll = cursor_column - row.w + 1;
+    if (input->scroll > total_columns - row.w + 1) input->scroll = total_columns - row.w + 1;
+    if (input->scroll < 0) input->scroll = 0;
+
+    old_clip = cterm__ui_narrow_clip(buffer, row);
+    style = focused ? ui->theme.input_focused : ui->theme.input;
+    cterm_fill(buffer, row, ' ', style);
+
+    if (length == 0) {
+        if (input->placeholder) cterm_text(buffer, row.x, row.y, ui->theme.placeholder, input->placeholder);
+    } else if (input->mask) {
+        int x = row.x - input->scroll;
+        size_t at = 0;
+        while (at < length) {
+            int used;
+            if (cterm_char_width(cterm__input_cp(input->text, length, at, &used)) > 0) {
+                cterm_put(buffer, x, row.y, input->mask, style);
+                x += cterm_char_width(input->mask);
+            }
+            at += (size_t)used;
+        }
+    } else {
+        cterm_textn(buffer, row.x - input->scroll, row.y, style, input->text, length);
+    }
+
+    if (focused) cterm_show_cursor(buffer, row.x + cursor_column - input->scroll, row.y);
+    cterm_set_clip(buffer, old_clip);
+    return result;
+}
+
+/* ========================================================================= *
+ * LIST
+ * ========================================================================= */
+
+/* Adapter so a plain array of strings can use the callback version. */
+static const char *cterm__list_from_array(int index, void *user_data) {
+    return ((const char *const *)user_data)[index];
+}
+
+CTERM_API int cterm_ui_list_fn(cterm_ui *ui, cterm_rect area, cterm_list *list, int count,
+                               cterm_list_text_fn text, void *user_data) {
+    cterm_buffer *buffer = ui->buffer;
+    const cterm_event *ev;
+    cterm_rect old_clip, rows, bar;
+    int focused = cterm__ui_register(ui, list, area);
+    int result = 0, previous, y, show_bar = count > area.h && area.w > 1;
+
+    /* The numbers must make sense, even if the item count changed since last frame. */
+    if (count < 0) count = 0;
+    list->selected = cterm__clamp(list->selected, 0, count > 0 ? count - 1 : 0);
+    previous = list->selected;
+
+    rows = area;
+    bar = cterm_rect_make(area.x + area.w - 1, area.y, 1, area.h);
+    if (show_bar) rows.w = area.w - 1;
+
+    ev = cterm__ui_keyboard_event(ui, focused);
+    if (ev && ev->type == CTERM_EVENT_KEY && !(ev->mods & (CTERM_MOD_CTRL | CTERM_MOD_ALT)) && count > 0) {
+        int page = area.h > 1 ? area.h - 1 : 1; /* keep one row of context */
+        int used = 1;
+        switch (ev->key) {
+            case CTERM_KEY_UP:        list->selected -= 1; break;
+            case CTERM_KEY_DOWN:      list->selected += 1; break;
+            case CTERM_KEY_PAGE_UP:   list->selected -= page; break;
+            case CTERM_KEY_PAGE_DOWN: list->selected += page; break;
+            case CTERM_KEY_HOME:      list->selected = 0; break;
+            case CTERM_KEY_END:       list->selected = count - 1; break;
+            case CTERM_KEY_ENTER:     result |= CTERM_UI_SUBMITTED; break;
+            default:                  used = 0; break;
+        }
+        if (used) ui->event_used = 1;
+    }
+
+    /* The scroll position can be moved by the scrollbar and by the wheel. */
+    {
+        int max_scroll = count > area.h ? count - area.h : 0;
+        if (show_bar) cterm__ui_scrollbar_mouse(ui, bar, list, count, &list->scroll);
+
+        ev = cterm__ui_mouse_event(ui, area); /* a press on the bar was already used above */
+        if (ev) {
+            if (ev->action == CTERM_MOUSE_SCROLL_UP) {
+                list->scroll -= CTERM__UI_WHEEL_STEP;
+                ui->event_used = 1;
+            } else if (ev->action == CTERM_MOUSE_SCROLL_DOWN) {
+                list->scroll += CTERM__UI_WHEEL_STEP;
+                ui->event_used = 1;
+            } else if (ev->action == CTERM_MOUSE_PRESS) {
+                int row = list->scroll + ev->y - area.y;
+                if (row < count) list->selected = row;
+                ui->event_used = 1;
+            }
+        }
+        list->scroll = cterm__clamp(list->scroll, 0, max_scroll);
+        list->selected = cterm__clamp(list->selected, 0, count > 0 ? count - 1 : 0);
+
+        /* Bring the selection into view when it has just moved, or the list has just
+         * changed height. Otherwise leave it, so the wheel can look elsewhere. */
+        if (list->selected != list->last_selected || list->selected != previous || area.h != list->last_height) {
+            if (list->selected < list->scroll) list->scroll = list->selected;
+            if (area.h > 0 && list->selected >= list->scroll + area.h) list->scroll = list->selected - area.h + 1;
+            list->scroll = cterm__clamp(list->scroll, 0, max_scroll);
+        }
+    }
+    if (list->selected != previous) result |= CTERM_UI_CHANGED;
+    list->last_selected = list->selected;
+    list->last_height = area.h;
+
+    /* Draw only the visible rows, so a list of a million items costs the same. */
+    for (y = 0; y < area.h; y++) {
+        int index = list->scroll + y;
+        cterm_rect row = cterm_rect_make(rows.x, rows.y + y, rows.w, 1);
+        cterm_style style = ui->theme.list_item;
+        if (index < count && index == list->selected) {
+            style = focused ? ui->theme.list_selected : ui->theme.list_selected_idle;
+        }
+        old_clip = cterm__ui_narrow_clip(buffer, row);
+        cterm_fill(buffer, row, ' ', style);
+        if (index < count) {
+            const char *label = text(index, user_data);
+            if (label) cterm_text(buffer, row.x, row.y, style, label);
+        }
+        cterm_set_clip(buffer, old_clip);
+    }
+
+    if (show_bar) cterm__ui_scrollbar_draw(ui, bar, count, list->scroll, focused);
+    return result;
+}
+
+CTERM_API int cterm_ui_list(cterm_ui *ui, cterm_rect area, cterm_list *list, const char *const *items, int count) {
+    /* The cast only removes const for the generic pointer. The adapter puts it back. */
+    return cterm_ui_list_fn(ui, area, list, count, cterm__list_from_array, (void *)(uintptr_t)items);
+}
+
+/* ========================================================================= *
+ * SCROLLABLE VIEW
+ * ========================================================================= */
+
+CTERM_API cterm_rect cterm_ui_scroll_begin(cterm_ui *ui, cterm_rect area, cterm_scroll *scroll,
+                                           int content_width, int content_height) {
+    cterm_buffer *buffer = ui->buffer;
+    const cterm_event *ev;
+    cterm_rect content;
+    int focused = 0, can_scroll, max_x, max_y, page;
+
+    if (content_height < 0) content_height = 0;
+    scroll->content_height = content_height;
+    scroll->bar_visible = content_height > area.h && area.w > 1;
+
+    /* A scrollbar takes one column away from the content. */
+    scroll->viewport = area;
+    if (scroll->bar_visible) scroll->viewport.w -= 1;
+    if (content_width <= 0) content_width = scroll->viewport.w;
+
+    max_x = content_width > scroll->viewport.w ? content_width - scroll->viewport.w : 0;
+    max_y = content_height > area.h ? content_height - area.h : 0;
+    can_scroll = max_x > 0 || max_y > 0;
+
+    /* A view with nothing to scroll shouldn't be a stop on the Tab key's route. */
+    if (can_scroll) focused = cterm__ui_register(ui, scroll, area);
+
+    ev = cterm__ui_keyboard_event(ui, focused);
+    page = area.h > 1 ? area.h - 1 : 1;
+    if (ev && ev->type == CTERM_EVENT_KEY && !(ev->mods & (CTERM_MOD_CTRL | CTERM_MOD_ALT))) {
+        int used = 1;
+        switch (ev->key) {
+            case CTERM_KEY_UP:        scroll->y -= 1; break;
+            case CTERM_KEY_DOWN:      scroll->y += 1; break;
+            case CTERM_KEY_LEFT:      scroll->x -= 1; break;
+            case CTERM_KEY_RIGHT:     scroll->x += 1; break;
+            case CTERM_KEY_PAGE_UP:   scroll->y -= page; break;
+            case CTERM_KEY_PAGE_DOWN: scroll->y += page; break;
+            case CTERM_KEY_HOME:      scroll->y = 0; scroll->x = 0; break;
+            case CTERM_KEY_END:       scroll->y = max_y; break;
+            default:                  used = 0; break;
+        }
+        if (used) ui->event_used = 1;
+    }
+
+    if (scroll->bar_visible) {
+        cterm_rect bar = cterm_rect_make(area.x + area.w - 1, area.y, 1, area.h);
+        cterm__ui_scrollbar_mouse(ui, bar, scroll, content_height, &scroll->y);
+    }
+
+    ev = cterm__ui_mouse_event(ui, area);
+    if (ev && can_scroll) {
+        int used = 1;
+        switch (ev->action) {
+            case CTERM_MOUSE_SCROLL_UP:    scroll->y -= CTERM__UI_WHEEL_STEP; break;
+            case CTERM_MOUSE_SCROLL_DOWN:  scroll->y += CTERM__UI_WHEEL_STEP; break;
+            case CTERM_MOUSE_SCROLL_LEFT:  scroll->x -= CTERM__UI_WHEEL_STEP; break;
+            case CTERM_MOUSE_SCROLL_RIGHT: scroll->x += CTERM__UI_WHEEL_STEP; break;
+            default:                       used = 0; break;
+        }
+        if (used) ui->event_used = 1;
+    }
+
+    scroll->x = cterm__clamp(scroll->x, 0, max_x);
+    scroll->y = cterm__clamp(scroll->y, 0, max_y);
+
+    scroll->saved_clip = cterm__ui_narrow_clip(buffer, scroll->viewport);
+    content = cterm_rect_make(scroll->viewport.x - scroll->x, scroll->viewport.y - scroll->y,
+                              content_width, content_height);
+    return content;
+}
+
+CTERM_API void cterm_ui_scroll_end(cterm_ui *ui, cterm_scroll *scroll) {
+    cterm_set_clip(ui->buffer, scroll->saved_clip);
+    if (scroll->bar_visible) {
+        cterm_rect bar = cterm_rect_make(scroll->viewport.x + scroll->viewport.w, scroll->viewport.y, 1, scroll->viewport.h);
+        cterm__ui_scrollbar_draw(ui, bar, scroll->content_height, scroll->y, cterm_ui_has_focus(ui, scroll));
+    }
+}
+
+#endif /* CTERM_NO_UI */
 
 #endif /* CTERM_IMPLEMENTATION_DONE */
 #endif /* CTERM_IMPLEMENTATION */

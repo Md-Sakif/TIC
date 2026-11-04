@@ -22,8 +22,8 @@ CXXFLAGS = -std=c++11 $(WARN) -g -I. -Itests -x c++
 SANITIZE = -fsanitize=address,undefined -fno-sanitize-recover=all
 
 BUILD = build
-TESTS = test_unicode test_buffer test_draw test_render test_parser
-DEMOS = keys dashboard
+TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui
+DEMOS = keys dashboard widgets
 E2E_APPS = e2e_app
 
 .PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan e2e windows test-windows clean
