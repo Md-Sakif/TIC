@@ -2,10 +2,13 @@
 #
 #   make                build the demos
 #   make test           build and run the unit tests
-#   make test-all       the above with gcc, clang and C++, plus sanitizers
+#   make test-all       the above with gcc, clang and C++, sanitizers, and link modes
+#   make test-link      check every documented way of including the header
+#   make check-readme   compile the examples in README.md
 #   make e2e            run the tests that use a real pseudo-terminal (POSIX only)
 #   make windows        cross-compile for Windows (needs MinGW)
 #   make test-windows   run the Windows build's unit tests with Wine
+#   make e2e-windows    run the ConPTY end-to-end test with Wine
 #   make clean          delete the build directory
 #
 # Choose tools with variables, for example: make test CC=clang
@@ -22,11 +25,11 @@ CXXFLAGS = -std=c++11 $(WARN) -g -I. -Itests -x c++
 SANITIZE = -fsanitize=address,undefined -fno-sanitize-recover=all
 
 BUILD = build
-TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui
+TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui test_alloc
 DEMOS = keys dashboard widgets
 E2E_APPS = e2e_app
 
-.PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan e2e windows test-windows clean
+.PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
 
 all: demos
 
@@ -66,7 +69,29 @@ test-cpp:
 		printf '%-20s' $$t; $(BUILD)/cpp/$$t; \
 	done
 
-test-all: test-gcc test-clang test-cpp test-asan
+# Proves every documented way of including the header compiles and links.
+LINK = tests/link
+test-link:
+	@mkdir -p $(BUILD)/link
+	$(CC) $(CFLAGS) $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/extern
+	$(BUILD)/link/extern
+	$(CC) $(CFLAGS) $(LINK)/static.c -o $(BUILD)/link/static
+	$(BUILD)/link/static
+	$(CC) $(CFLAGS) -DCTERM_NO_UI $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/no_ui
+	$(BUILD)/link/no_ui
+	$(CC) $(CFLAGS) -DCTERM_MAX_MARKS=8 $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/marks
+	$(BUILD)/link/marks
+	$(CC) $(CFLAGS) $(LINK)/header_only.c -c -o $(BUILD)/link/header_only.o
+	$(CC) -std=gnu99 $(WARN) -I. $(LINK)/late_implementation.c -o $(BUILD)/link/late
+	$(BUILD)/link/late
+	$(CC) $(CFLAGS) -c $(LINK)/other.c -o $(BUILD)/link/other.o
+	$(CXX) $(CXXFLAGS) $(LINK)/main.c -c -o $(BUILD)/link/cpp_main.o
+	$(CXX) $(BUILD)/link/cpp_main.o $(BUILD)/link/other.o -o $(BUILD)/link/mixed 2>/dev/null || \
+		(echo "C++ and C objects failed to link"; exit 1)
+	$(BUILD)/link/mixed
+	@echo "link modes: ok"
+
+test-all: test-gcc test-clang test-cpp test-asan test-link
 
 $(BUILD)/e2e_app: tests/e2e_app.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
@@ -82,11 +107,19 @@ windows:
 	@set -e; for d in $(DEMOS); do \
 		$(MINGW) $(CFLAGS) demo/$$d.c -o $(BUILD)/windows/$$d.exe; \
 	done
+	$(MINGW) $(CFLAGS) tests/e2e_app.c -o $(BUILD)/windows/e2e_app.exe
+	$(MINGW) $(CFLAGS) tests/e2e_conpty.c -o $(BUILD)/windows/e2e_conpty.exe
 
 test-windows: windows
 	@set -e; for t in $(TESTS); do \
 		printf '%-20s' $$t; $(WINE) $(BUILD)/windows/$$t.exe; \
 	done
+
+e2e-windows: windows
+	cd $(BUILD)/windows && $(WINE) e2e_conpty.exe e2e_app.exe
+
+check-readme:
+	$(PYTHON) tests/check_readme.py $(CC)
 
 clean:
 	rm -rf $(BUILD)

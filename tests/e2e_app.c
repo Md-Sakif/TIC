@@ -51,6 +51,9 @@ int main(int argc, char **argv) {
                         cterm_text(s, 1, 1, cterm_style_make(CTERM_RED, CTERM_DEFAULT, CTERM_BOLD), "frame-marker");
                         cterm_present();
                     }
+                    if (ev.key == 's') {
+                        fprintf(log_file, "suspend %d\n", cterm_suspend());
+                    }
                     if (ev.key == 'e') {
                         fflush(log_file);
                         exit(7);

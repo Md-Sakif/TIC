@@ -88,6 +88,14 @@ CTERM_API void cterm_shutdown(void);
 /* A description of the last failure. Never NULL; "" if nothing has failed. */
 CTERM_API const char *cterm_error(void);
 
+/* Puts the app in the background and hands the terminal back to the shell, which is
+ * what Ctrl+Z normally does. cterm delivers Ctrl+Z as an ordinary key, so bind it
+ * yourself if you want this. It returns once the user resumes the app (`fg`), and
+ * then cterm_poll reports CTERM_EVENT_RESIZE so that you redraw.
+ *
+ * Returns 0, or -1 on Windows, which has no such feature. */
+CTERM_API int cterm_suspend(void);
+
 /* --- Unicode ------------------------------------------------------------- */
 
 /* How many terminal cells a character takes up: 0 for combining marks, 2 for
@@ -620,6 +628,10 @@ CTERM_API void cterm_ui_scroll_end(cterm_ui *ui, cterm_scroll *scroll);
   #endif
   #include <windows.h>
 #else
+  /* SA_RESTART is missing if libc has already been set up to hide POSIX. */
+  #ifndef SA_RESTART
+    #error "cterm.h: #define CTERM_IMPLEMENTATION and #include \"cterm.h\" must come before every other #include in this file (or compile with -std=gnu99 instead of -std=c99)"
+  #endif
   #include <errno.h>
   #include <fcntl.h>
   #include <sys/ioctl.h>
@@ -1495,6 +1507,16 @@ static int cterm__cell_equal(const cterm_cell *a, const cterm_cell *b) {
     return 1;
 }
 
+/* Terminals don't all agree how wide some characters are: wide characters and emoji,
+ * text with marks, and the scripts from Hebrew through to Southeast Asian (U+0590 to
+ * U+1FFF), whose vowel signs some terminals count as zero cells and others as one.
+ * After drawing one, the renderer forgets where the cursor is, which forces an explicit
+ * move next, so a disagreement can't push the rest of the row sideways. It costs a
+ * few bytes per character, which is why common ranges like box drawing are left out. */
+static int cterm__width_is_disputed(uint32_t cp) {
+    return cp >= 0x1F000 || (cp >= 0x0590 && cp <= 0x1FFF);
+}
+
 /* Appends what's needed to make the terminal match `back`, and updates `front`
  * to match as well. `front` and `back` must be the same size.
  *
@@ -1554,10 +1576,7 @@ static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffe
                     cterm__sb_append(out, bytes, (size_t)n);
                 }
 
-                /* Terminals don't all agree on the width of wide characters, emoji
-                 * and marked text. Forgetting the position forces an explicit move
-                 * next, so a disagreement can't push the rest of the row sideways. */
-                if (width == 2 || want->ch >= 0x1F000 || want->marks[0]) {
+                if (width == 2 || want->marks[0] || cterm__width_is_disputed(want->ch)) {
                     state->cursor_x = -1;
                     state->cursor_y = -1;
                 } else {
@@ -2060,15 +2079,49 @@ static int cterm__parser_next(cterm__parser *p, cterm_event *ev, int flush) {
  *   cterm__plat_write      write all the bytes; 0 on success, -1 on failure
  *   cterm__plat_size       get the terminal's size in cells
  *   cterm__plat_now_ms     a clock that only moves forward, in milliseconds
+ *   cterm__plat_suspend    hand the terminal back until the user resumes the app
  *
- * It sets cterm__resize_pending when the terminal changes size.
+ * It sets cterm__resize_pending when the terminal changes size. It also has to make
+ * sure the terminal gets restored if the program crashes.
  * ========================================================================= */
 
-/* sig_atomic_t because a signal handler sets it on POSIX. */
-static volatile sig_atomic_t cterm__resize_pending = 0;
+/* Entering: alternate screen (so the user's shell history comes back when we
+ * finish), no auto-wrap (so drawing the bottom-right cell can't scroll the
+ * screen), hidden cursor, and bracketed paste. */
+#define CTERM__ENTER_SEQUENCE "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?2004h"
+
+/* Leaving undoes everything, including modes that may not be on, because turning
+ * off something that's already off is harmless. */
+#define CTERM__LEAVE_SEQUENCE \
+    "\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"
+
+/* What a signal handler is allowed to touch. sig_atomic_t is the only type the C
+ * standard guarantees is safe to set from one. */
+static volatile sig_atomic_t cterm__resize_pending = 0;  /* the size may have changed */
+static volatile sig_atomic_t cterm__resumed = 0;         /* came back from being suspended */
+static volatile sig_atomic_t cterm__entered = 0;         /* the terminal is in our modes */
+static volatile sig_atomic_t cterm__mouse_mode = 0;
+
+/* The sequence that turns on a mouse mode. */
+static const char *cterm__mouse_on_sequence(int mode) {
+    return mode == CTERM_MOUSE_BUTTONS ? "\x1b[?1002h\x1b[?1006h" :
+           mode == CTERM_MOUSE_MOTION  ? "\x1b[?1003h\x1b[?1006h" : "";
+}
 #if defined(_WIN32)
 
 /* ------------------------------ Windows ---------------------------------- */
+
+/* Older compilers' headers may not have these, but they're only numbers, and the
+ * console itself decides whether they work. */
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+  #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+#ifndef DISABLE_NEWLINE_AUTO_RETURN
+  #define DISABLE_NEWLINE_AUTO_RETURN 0x0008
+#endif
+#ifndef ENABLE_VIRTUAL_TERMINAL_INPUT
+  #define ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200
+#endif
 
 static HANDLE cterm__hin, cterm__hout;
 static DWORD  cterm__saved_in_mode, cterm__saved_out_mode;
@@ -2077,6 +2130,36 @@ static UINT   cterm__saved_in_cp, cterm__saved_out_cp;
 /* True if the console accepted ENABLE_VIRTUAL_TERMINAL_INPUT, meaning special
  * keys arrive as the same escape sequences a Unix terminal would send. */
 static int cterm__vt_input;
+
+/* Puts the console back the way it was, without touching any cterm state. It's used
+ * when the program is about to die. */
+static void cterm__emergency_restore(void) {
+    DWORD written;
+    if (!cterm__entered) return;
+    cterm__entered = 0;
+    WriteFile(cterm__hout, CTERM__LEAVE_SEQUENCE, (DWORD)strlen(CTERM__LEAVE_SEQUENCE), &written, NULL);
+    SetConsoleMode(cterm__hin, cterm__saved_in_mode);
+    SetConsoleMode(cterm__hout, cterm__saved_out_mode);
+    SetConsoleCP(cterm__saved_in_cp);
+    SetConsoleOutputCP(cterm__saved_out_cp);
+}
+
+/* Ctrl+C arrives as a key, but Ctrl+Break and closing the window still end the
+ * process. Windows runs this on a separate thread when they happen. */
+static BOOL WINAPI cterm__on_console_event(DWORD type) {
+    (void)type;
+    cterm__emergency_restore();
+    return FALSE; /* carry on with the default, which ends the process */
+}
+
+static LPTOP_LEVEL_EXCEPTION_FILTER cterm__saved_crash_filter;
+
+/* Runs when the program crashes (the Windows version of SIGSEGV and friends). */
+static LONG WINAPI cterm__on_crash(EXCEPTION_POINTERS *info) {
+    cterm__emergency_restore();
+    if (cterm__saved_crash_filter) return cterm__saved_crash_filter(info);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 static int cterm__plat_init(void) {
     DWORD in_mode, out_mode;
@@ -2115,10 +2198,15 @@ static int cterm__plat_init(void) {
 
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
+
+    SetConsoleCtrlHandler(cterm__on_console_event, TRUE);
+    cterm__saved_crash_filter = SetUnhandledExceptionFilter(cterm__on_crash);
     return 0;
 }
 
 static void cterm__plat_shutdown(void) {
+    SetConsoleCtrlHandler(cterm__on_console_event, FALSE);
+    SetUnhandledExceptionFilter(cterm__saved_crash_filter);
     SetConsoleMode(cterm__hin, cterm__saved_in_mode);
     SetConsoleMode(cterm__hout, cterm__saved_out_mode);
     SetConsoleCP(cterm__saved_in_cp);
@@ -2251,6 +2339,10 @@ static uint64_t cterm__plat_now_ms(void) {
     return GetTickCount64();
 }
 
+static int cterm__plat_suspend(void) {
+    return cterm__fail("Windows has no job control, so cterm_suspend isn't available");
+}
+
 #else
 
 /* ------------------------------- POSIX ----------------------------------- */
@@ -2272,7 +2364,50 @@ static void cterm__wake(void) {
     }
 }
 
-static struct sigaction cterm__saved_winch;
+/* --- Signals --------------------------------------------------------------
+ *
+ * Signal handlers may interrupt the program anywhere, including inside malloc or
+ * printf, so they can only call a short list of "async-signal-safe" functions. Those
+ * include write, tcsetattr, sigaction, sigprocmask and raise, and that's all that's
+ * used below. Nothing here allocates memory or touches a cell buffer.
+ */
+
+static struct termios cterm__raw_termios;
+
+/* Puts the terminal back to normal, for a crash or a suspend. */
+static void cterm__emergency_restore(void) {
+    ssize_t ignored;
+    if (!cterm__entered) return;
+    cterm__entered = 0;
+    ignored = write(STDOUT_FILENO, CTERM__LEAVE_SEQUENCE, sizeof CTERM__LEAVE_SEQUENCE - 1);
+    (void)ignored;
+    /* TCSANOW, because waiting for output could hang if the terminal is stuck. */
+    tcsetattr(STDIN_FILENO, TCSANOW, &cterm__saved_termios);
+}
+
+/* Takes the terminal again, after a suspend. */
+static void cterm__emergency_reenter(void) {
+    const char *mouse = cterm__mouse_on_sequence(cterm__mouse_mode);
+    size_t mouse_length = 0;
+    ssize_t ignored;
+    while (mouse[mouse_length]) mouse_length++; /* strlen isn't on the safe list */
+    tcsetattr(STDIN_FILENO, TCSANOW, &cterm__raw_termios);
+    ignored = write(STDOUT_FILENO, CTERM__ENTER_SEQUENCE, sizeof CTERM__ENTER_SEQUENCE - 1);
+    ignored = write(STDOUT_FILENO, mouse, mouse_length);
+    (void)ignored;
+    cterm__entered = 1;
+    cterm__resumed = 1;
+    cterm__resize_pending = 1;
+    cterm__wake();
+}
+
+/* Every signal cterm handles, with what was there before so it can be put back. */
+#define CTERM__MAX_SIGNALS 12
+static struct {
+    int signal_number;
+    struct sigaction saved;
+} cterm__signals[CTERM__MAX_SIGNALS];
+static int cterm__signal_count = 0;
 
 static void cterm__on_winch(int sig) {
     int saved_errno = errno; /* the interrupted code may be about to check errno */
@@ -2280,6 +2415,105 @@ static void cterm__on_winch(int sig) {
     cterm__resize_pending = 1;
     cterm__wake();
     errno = saved_errno;
+}
+
+/* The program is dying. Fix the terminal, then let the signal do what it would have
+ * done anyway, so the exit status and any core dump are still correct. The signal is
+ * blocked while this handler runs, so raise() only takes effect once it returns. */
+static void cterm__on_fatal(int sig) {
+    int i;
+    cterm__emergency_restore();
+    for (i = 0; i < cterm__signal_count; i++) {
+        if (cterm__signals[i].signal_number == sig) {
+            sigaction(sig, &cterm__signals[i].saved, NULL);
+            break;
+        }
+    }
+    raise(sig);
+}
+
+static volatile sig_atomic_t cterm__continued = 0;
+
+/* SIGCONT: the user has resumed the app (or something sent it directly). */
+static void cterm__on_cont(int sig) {
+    int saved_errno = errno;
+    (void)sig;
+    cterm__continued = 1;
+    cterm__emergency_reenter();
+    errno = saved_errno;
+}
+
+/* SIGTSTP: asked to stop, by cterm_suspend or by something else. The terminal has to
+ * be handed back first, and only then can the process really stop. To do that it
+ * sends itself the same signal with the default action, and execution pauses inside
+ * that raise() until SIGCONT arrives. */
+static void cterm__on_tstp(int sig) {
+    int saved_errno = errno;
+    struct sigaction stop_action, this_action;
+    sigset_t unblock;
+
+    cterm__continued = 0;
+    cterm__emergency_restore();
+
+    memset(&stop_action, 0, sizeof stop_action);
+    stop_action.sa_handler = SIG_DFL;
+    sigemptyset(&stop_action.sa_mask);
+    sigaction(SIGTSTP, &stop_action, &this_action);
+
+    sigemptyset(&unblock);
+    sigaddset(&unblock, SIGTSTP);
+    sigprocmask(SIG_UNBLOCK, &unblock, NULL);
+
+    raise(SIGTSTP);
+
+    /* Resumed. The OS ignores stop signals in a group with no shell to resume it, in
+     * which case raise() came straight back. Then SIGCONT never ran, so do its job. */
+    sigprocmask(SIG_BLOCK, &unblock, NULL);
+    sigaction(SIGTSTP, &this_action, NULL);
+    if (!cterm__continued) cterm__emergency_reenter();
+    errno = saved_errno;
+    (void)sig;
+}
+
+/* Installs a handler, remembering what was there. */
+static void cterm__install_signal(int sig, void (*handler)(int), int block_others) {
+    struct sigaction action;
+    if (cterm__signal_count >= CTERM__MAX_SIGNALS) return;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = handler;
+    if (block_others) sigfillset(&action.sa_mask);
+    else sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    if (sigaction(sig, &action, &cterm__signals[cterm__signal_count].saved) == 0) {
+        cterm__signals[cterm__signal_count].signal_number = sig;
+        cterm__signal_count++;
+    }
+}
+
+/* Installs a handler unless the signal is being ignored. Programs started with `nohup`
+ * ignore SIGHUP on purpose, for example, and that choice has to be respected. */
+static void cterm__install_unless_ignored(int sig, void (*handler)(int)) {
+    struct sigaction current;
+    if (sigaction(sig, NULL, &current) == 0 && current.sa_handler == SIG_IGN) return;
+    cterm__install_signal(sig, handler, 1);
+}
+
+static void cterm__install_signals(void) {
+    static const int fatal[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL };
+    size_t i;
+    cterm__signal_count = 0;
+    for (i = 0; i < sizeof fatal / sizeof fatal[0]; i++) cterm__install_unless_ignored(fatal[i], cterm__on_fatal);
+    cterm__install_unless_ignored(SIGTSTP, cterm__on_tstp);
+    cterm__install_signal(SIGCONT, cterm__on_cont, 0);
+    cterm__install_signal(SIGWINCH, cterm__on_winch, 0);
+}
+
+static void cterm__restore_signals(void) {
+    int i;
+    for (i = cterm__signal_count - 1; i >= 0; i--) {
+        sigaction(cterm__signals[i].signal_number, &cterm__signals[i].saved, NULL);
+    }
+    cterm__signal_count = 0;
 }
 
 static void cterm__close_wake_pipe(void) {
@@ -2313,7 +2547,6 @@ static int cterm__open_wake_pipe(void) {
 
 static int cterm__plat_init(void) {
     struct termios raw;
-    struct sigaction action;
 
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
         return cterm__fail("stdin and stdout must both be a terminal");
@@ -2353,22 +2586,19 @@ static int cterm__plat_init(void) {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
         return cterm__fail("could not switch the terminal to raw mode");
     }
+    cterm__raw_termios = raw;
 
     if (cterm__open_wake_pipe() != 0) {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &cterm__saved_termios);
         return -1;
     }
 
-    memset(&action, 0, sizeof action);
-    action.sa_handler = cterm__on_winch;
-    sigemptyset(&action.sa_mask);
-    action.sa_flags = SA_RESTART;
-    sigaction(SIGWINCH, &action, &cterm__saved_winch);
+    cterm__install_signals();
     return 0;
 }
 
 static void cterm__plat_shutdown(void) {
-    sigaction(SIGWINCH, &cterm__saved_winch, NULL);
+    cterm__restore_signals();
     cterm__close_wake_pipe();
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &cterm__saved_termios);
 }
@@ -2433,21 +2663,16 @@ static uint64_t cterm__plat_now_ms(void) {
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 }
 
+static int cterm__plat_suspend(void) {
+    raise(SIGTSTP); /* see cterm__on_tstp: this returns once the app is resumed */
+    return 0;
+}
+
 #endif /* platform */
 
 /* ========================================================================= *
  * LIFECYCLE
  * ========================================================================= */
-
-/* Entering: alternate screen (so the user's shell history comes back when we
- * finish), no auto-wrap (so drawing the bottom-right cell can't scroll the
- * screen), hidden cursor, and bracketed paste. */
-#define CTERM__ENTER_SEQUENCE "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?2004h"
-
-/* Leaving undoes everything, including modes that may not be on, because turning
- * off something that's already off is harmless. */
-#define CTERM__LEAVE_SEQUENCE \
-    "\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"
 
 /* All the state of the one terminal a process has. */
 static struct {
@@ -2492,13 +2717,28 @@ CTERM_API int cterm_init(void) {
     cterm__term.color_mode = cterm__color_mode_from_env(getenv("NO_COLOR"), getenv("COLORTERM"), getenv("TERM"));
 #endif
     cterm__term.active = 1;
+    cterm__mouse_mode = CTERM_MOUSE_OFF;
+    cterm__resize_pending = 0;
+    cterm__resumed = 0;
     cterm__plat_write(CTERM__ENTER_SEQUENCE, strlen(CTERM__ENTER_SEQUENCE));
+    cterm__entered = 1;
+
+    /* So a plain exit() doesn't leave the terminal broken. atexit can't be undone, so
+     * it's only registered once, however many times cterm_init runs. */
+    {
+        static int registered = 0;
+        if (!registered) {
+            registered = 1;
+            atexit(cterm_shutdown);
+        }
+    }
     return 0;
 }
 
 CTERM_API void cterm_shutdown(void) {
     if (!cterm__term.active) return;
     cterm__term.active = 0;
+    cterm__entered = 0;
     cterm__plat_write(CTERM__LEAVE_SEQUENCE, strlen(CTERM__LEAVE_SEQUENCE));
     cterm__plat_shutdown();
 
@@ -2508,6 +2748,11 @@ CTERM_API void cterm_shutdown(void) {
     cterm__sb_free(&cterm__term.out);
     cterm__parser_free(&cterm__term.parser);
     memset(&cterm__term, 0, sizeof cterm__term);
+}
+
+CTERM_API int cterm_suspend(void) {
+    if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
+    return cterm__plat_suspend();
 }
 
 CTERM_API cterm_buffer *cterm_screen(void) {
@@ -2572,11 +2817,13 @@ CTERM_API int cterm_poll(cterm_event *event, int timeout_ms) {
 
         /* A resize comes first: everything drawn from here on should use the new size. */
         if (cterm__resize_pending) {
-            int changed;
+            int changed, resumed = cterm__resumed;
             cterm__resize_pending = 0;
+            cterm__resumed = 0;
             changed = cterm__update_size();
             if (changed < 0) return -1;
-            if (changed > 0) {
+            if (resumed) cterm__term.repaint = 1; /* the shell has used the screen since */
+            if (changed > 0 || resumed) {
                 event->type = CTERM_EVENT_RESIZE;
                 event->width = cterm__term.back.width;
                 event->height = cterm__term.back.height;
@@ -2626,10 +2873,10 @@ CTERM_API int cterm_poll(cterm_event *event, int timeout_ms) {
 }
 
 CTERM_API void cterm_set_mouse(cterm_mouse_mode mode) {
-    const char *on = mode == CTERM_MOUSE_BUTTONS ? "\x1b[?1002h\x1b[?1006h" :
-                     mode == CTERM_MOUSE_MOTION  ? "\x1b[?1003h\x1b[?1006h" : "";
     static const char off[] = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+    const char *on = cterm__mouse_on_sequence(mode);
     if (!cterm__term.active) return;
+    cterm__mouse_mode = mode; /* remembered, so it can be turned back on after a suspend */
     cterm__plat_write(off, sizeof off - 1);
     cterm__plat_write(on, strlen(on));
 }

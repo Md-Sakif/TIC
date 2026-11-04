@@ -149,6 +149,31 @@ static void test_wide_and_marks(void) {
     fixture_free(&f);
 }
 
+static void test_disputed_widths_force_a_move(void) {
+    /* Terminals disagree about these widths, so the next cell has to be positioned
+     * explicitly: the output must hold one cursor move for every character. */
+    fixture f;
+    size_t i;
+    int moves = 0;
+    fixture_init(&f, 10, 1);
+    present(&f, 1);
+    cterm_text(f.back, 0, 0, cterm_plain(), "\xE0\xA6\x95\xE0\xA6\xBE" "x"); /* Bengali KA, AA, then x */
+    present(&f, 0);
+    for (i = 0; i + 1 < f.out.len; i++) {
+        size_t j = i + 2;
+        if (f.out.data[i] != 0x1b || f.out.data[i + 1] != '[') continue;
+        while (j < f.out.len && ((f.out.data[j] >= '0' && f.out.data[j] <= '9') || f.out.data[j] == ';')) j++;
+        if (j < f.out.len && f.out.data[j] == 'H') moves++;
+    }
+    CHECK_INT(moves, 3);
+    CHECK_INT(vt_compare(&f.term, f.back), 0);
+    CHECK_INT(cterm__width_is_disputed(0x995), 1);
+    CHECK_INT(cterm__width_is_disputed(0x1F600), 1);
+    CHECK_INT(cterm__width_is_disputed('a'), 0);
+    CHECK_INT(cterm__width_is_disputed(0x2500), 0); /* box drawing stays cheap */
+    fixture_free(&f);
+}
+
 static void test_bottom_right_corner(void) {
     /* The classic trap: this cell must not make the screen scroll. */
     fixture f;
@@ -291,6 +316,7 @@ int main(void) {
     RUN(test_styles);
     RUN(test_style_only_change);
     RUN(test_wide_and_marks);
+    RUN(test_disputed_widths_force_a_move);
     RUN(test_bottom_right_corner);
     RUN(test_cursor);
     RUN(test_full_repaint_recovers);

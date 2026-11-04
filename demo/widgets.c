@@ -136,6 +136,7 @@ int main(void) {
         if (ev.type == CTERM_EVENT_KEY && (ev.mods & CTERM_MOD_CTRL)) {
             if (ev.key == 'q') break;
             if (ev.key == 'l') cterm_redraw();
+            if (ev.key == 'z') cterm_suspend(); /* does nothing on Windows */
         }
     }
 

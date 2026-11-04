@@ -27,9 +27,9 @@ failures = []
 class Terminal:
     """A pseudo-terminal with one program running inside it."""
 
-    def __init__(self, cols=80, rows=24, timeout=None):
+    def __init__(self, cols=80, rows=24, timeout=None, ignore_signal=None):
         self.master, self.slave = pty.openpty()
-        self.resize(cols, rows, signal_app=False)
+        self.resize(cols, rows)
         self.settings_before = termios.tcgetattr(self.slave)
         self.dir = tempfile.TemporaryDirectory()
         self.log_path = os.path.join(self.dir.name, "events.log")
@@ -40,6 +40,8 @@ class Terminal:
 
         def become_terminal_owner():
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            if ignore_signal is not None:
+                signal.signal(ignore_signal, signal.SIG_IGN)
 
         self.process = subprocess.Popen(
             args,
@@ -50,7 +52,7 @@ class Terminal:
             preexec_fn=become_terminal_owner,
         )
 
-    def resize(self, cols, rows, signal_app=True):
+    def resize(self, cols, rows):
         # Setting the size on a terminal makes the kernel send SIGWINCH to its program.
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
@@ -263,6 +265,147 @@ def test_hangup_ends_the_loop():
     check(code is not None, "app kept running after the terminal closed")
     t.master = os.open(os.devnull, os.O_RDONLY)  # so close() has something to close
     t.close()
+
+
+def check_crash_recovery(trigger, expected_exit):
+    t = Terminal()
+    t.wait_for_log("ready 80 24")
+    check(is_raw(t), "terminal should be raw before the crash")
+    t.drain()
+    t.output = b""
+    trigger(t)
+    code = t.wait_exit()
+    output = t.drain()
+    check(code == expected_exit, "exit status was %s, expected %s" % (code, expected_exit))
+    check(t.restored(), "terminal settings were not restored (exit %s)" % code)
+    check(b"\x1b[?1049l" in output, "did not leave the alternate screen (exit %s)" % code)
+    check(b"\x1b[?25h" in output, "did not show the cursor again (exit %s)" % code)
+    t.close()
+
+
+def test_recovers_from_exit_call():
+    # The app calls exit() without ever calling cterm_shutdown().
+    check_crash_recovery(lambda t: t.send(b"\x05"), 7)
+
+
+def test_recovers_from_abort():
+    check_crash_recovery(lambda t: t.send(b"\x07"), -signal.SIGABRT)
+
+
+def test_recovers_from_signals():
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGSEGV, signal.SIGBUS, signal.SIGFPE):
+        check_crash_recovery(lambda t: t.process.send_signal(number), -number)
+
+
+def test_ignored_signal_stays_ignored():
+    # `nohup` makes SIGHUP ignored, and cterm has to respect that.
+    t = Terminal(ignore_signal=signal.SIGHUP)
+    t.wait_for_log("ready 80 24")
+    t.process.send_signal(signal.SIGHUP)
+    time.sleep(0.1)
+    check(t.process.poll() is None, "an ignored SIGHUP killed the app")
+    t.send(b"\x11")
+    check(t.wait_exit() == 0, "app did not exit cleanly")
+    t.close()
+
+
+def test_suspend_with_no_shell_keeps_working():
+    # With no shell above it the OS discards the stop, so the app has to carry on.
+    t = Terminal()
+    t.wait_for_log("ready 80 24")
+    t.send(b"\x13")
+    check(t.wait_for_log("suspend 0"), "cterm_suspend did not return")
+    check(is_raw(t), "terminal should be raw again")
+    t.send(b"a")
+    check(t.wait_for_log("key 97 0"), "input stopped working after the suspend")
+    t.send(b"\x11")
+    check(t.wait_exit() == 0, "app did not exit cleanly")
+    check(t.restored(), "terminal settings were not restored")
+    t.close()
+
+
+def test_stop_and_continue_signals():
+    # SIGSTOP can't be caught. The app only finds out when SIGCONT arrives.
+    t = Terminal()
+    t.wait_for_log("ready 80 24")
+    t.send(b"\x10")
+    t.wait_for_log("key 112 4")
+    t.drain(0.1)
+    t.process.send_signal(signal.SIGSTOP)
+    time.sleep(0.1)
+    t.output = b""
+    t.process.send_signal(signal.SIGCONT)
+    check(t.wait_for_log("resize 80 24"), "resuming should ask the app to redraw")
+    t.send(b"\x10")
+    t.wait_for_log("key 112 4")
+    output = t.drain(0.2)
+    check(b"\x1b[?1049h" in output, "did not go back to the alternate screen")
+    check(b"\x1b[?1002h" in output, "did not turn mouse reporting back on")
+    check(b"frame-marker" in output, "did not repaint after resuming")
+    check(t.process.poll() is None, "the app should still be running")
+    t.send(b"\x11")
+    check(t.wait_exit() == 0, "app did not exit cleanly")
+    t.close()
+
+
+def test_suspend_under_a_real_shell():
+    # The real Ctrl+Z flow: a job-control shell runs the app, the app stops, and the
+    # shell gets the terminal back in a normal state and then runs `fg`.
+    master, slave = pty.openpty()
+    fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    before = termios.tcgetattr(slave)
+
+    def become_terminal_owner():
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    with tempfile.TemporaryDirectory() as folder:
+        log = os.path.join(folder, "log")
+        script = 'set -m; "$1" "$2"; echo AFTER-STOP; sleep 0.3; fg; echo AFTER-FG'
+        shell = subprocess.Popen(
+            ["bash", "-c", script, "bash", APP, log],
+            stdin=slave, stdout=slave, stderr=slave,
+            start_new_session=True, preexec_fn=become_terminal_owner,
+        )
+        output = b""
+
+        def pump(until_text=None, until_log=None, seconds=4):
+            nonlocal output
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.01)
+                if ready:
+                    try:
+                        output += os.read(master, 65536)
+                    except OSError:
+                        return False
+                if until_text and until_text in output:
+                    return True
+                if until_log and os.path.exists(log):
+                    with open(log, encoding="utf-8", errors="replace") as f:
+                        if until_log in f.read().splitlines():
+                            return True
+            return False
+
+        check(pump(until_log="ready 80 24"), "app did not start under the shell")
+        check(not termios.tcgetattr(slave)[3] & termios.ECHO, "terminal should be raw while running")
+
+        os.write(master, b"\x13")
+        check(pump(until_text=b"AFTER-STOP"), "the app did not stop")
+        check(b"\x1b[?1049l" in output, "did not leave the alternate screen before stopping")
+        attrs = termios.tcgetattr(slave)
+        check(attrs[3] & termios.ECHO and attrs[3] & termios.ICANON, "the shell got a terminal still in raw mode")
+
+        check(pump(until_log="suspend 0"), "the app did not resume after fg")
+        check(pump(until_log="resize 80 24"), "resuming should ask the app to redraw")
+        check(not termios.tcgetattr(slave)[3] & termios.ECHO, "terminal should be raw again after fg")
+
+        os.write(master, b"\x11")
+        check(pump(until_text=b"AFTER-FG"), "the app did not finish")
+        code = shell.wait(timeout=3)
+        check(code == 0, "shell exit status was %s" % code)
+        check(termios.tcgetattr(slave) == before, "terminal settings were not restored at the end")
+    os.close(master)
+    os.close(slave)
 
 
 TESTS = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
