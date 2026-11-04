@@ -1,11 +1,13 @@
 # Runs the tests on real Linux, macOS and Windows machines on every push. This is the
 # only place the macOS and MSVC builds, and real Windows consoles, get tested.
+# The time limits stop a hung test tying up a job for GitHub's default of 6 hours.
 name: CI
 on: [push, pull_request]
 
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install compilers
@@ -23,6 +25,7 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Unit tests
@@ -38,6 +41,7 @@ jobs:
 
   windows-gcc:
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -50,6 +54,7 @@ jobs:
 
   windows-msvc:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
