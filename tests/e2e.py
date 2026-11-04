@@ -13,20 +13,111 @@ import os
 import pty
 import select
 import signal
+import socket
 import struct
 import subprocess
 import sys
 import tempfile
 import termios
 import time
+import traceback
 
 APP = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "build/e2e_app")
 failures = []
+current_test = "startup"
 
 # Sanitizer builds have their own crash handlers, which report the crash and exit with
 # status 1. cterm chains to them correctly, but the crash tests also check the exit
 # status, so ask the sanitizer to leave those signals alone.
 TEST_ENV = dict(os.environ, ASAN_OPTIONS="handle_segv=0:handle_sigbus=0:handle_sigfpe=0:handle_abort=0")
+
+
+# The session leader of a terminal is the process that owns it. When that process exits,
+# macOS revokes the terminal, so even a file descriptor opened earlier stops working
+# and its settings can't be read. Linux keeps it readable. The tests need to read the
+# settings after the app has exited, because that's how they prove they were restored.
+#
+# So the app is never the leader. This small program takes that role, runs the app as its
+# child, reports the app's pid and exit status over a socket, and stays alive until the
+# test closes that socket. A Python handler is used for SIGHUP, rather than ignoring it,
+# because handlers are reset when the app starts but "ignored" would be inherited.
+HOLDER = r"""
+import fcntl, os, signal, socket, subprocess, sys, termios
+
+control = socket.socket(fileno=int(sys.argv[1]))
+ignore_signal = int(sys.argv[2])
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+signal.signal(signal.SIGHUP, lambda *_: None)
+
+def child_setup():
+    if ignore_signal:
+        signal.signal(ignore_signal, signal.SIG_IGN)
+
+child = subprocess.Popen(sys.argv[3:], preexec_fn=child_setup)
+control.sendall(b"pid %d\n" % child.pid)
+control.sendall(b"exit %d\n" % child.wait())
+while control.recv(1):
+    pass
+"""
+
+
+class App:
+    """The running app. It has the parts of subprocess.Popen the tests use."""
+
+    def __init__(self, args, terminal_fd, ignore_signal):
+        self.control, holder_end = socket.socketpair()
+        self.holder = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(holder_end.fileno()), str(ignore_signal or 0)] + args,
+            stdin=terminal_fd,
+            stdout=terminal_fd,
+            stderr=terminal_fd,
+            start_new_session=True,
+            pass_fds=(holder_end.fileno(),),
+            env=TEST_ENV,
+        )
+        holder_end.close()
+        self.received = b""
+        self.pid = None
+        self.code = None
+        self._read_messages(10)
+        if self.pid is None:
+            raise RuntimeError("the holder process did not start the app")
+
+    def _read_messages(self, seconds):
+        ready, _, _ = select.select([self.control], [], [], seconds)
+        if not ready:
+            return
+        self.received += self.control.recv(4096)
+        while b"\n" in self.received:
+            line, self.received = self.received.split(b"\n", 1)
+            kind, value = line.split()
+            if kind == b"pid":
+                self.pid = int(value)
+            elif kind == b"exit":
+                self.code = int(value)
+
+    def poll(self):
+        if self.code is None:
+            self._read_messages(0)
+        return self.code
+
+    def wait(self, timeout):
+        deadline = time.time() + timeout
+        while self.poll() is None:
+            if time.time() >= deadline:
+                raise TimeoutError("the app is still running")
+            self._read_messages(0.01)
+        return self.code
+
+    def send_signal(self, number):
+        if self.poll() is None:
+            os.kill(self.pid, number)
+
+    def stop(self):
+        """Ends the app if needed, then lets the holder exit too."""
+        self.send_signal(signal.SIGKILL)
+        self.control.close()
+        self.holder.wait(timeout=5)
 
 
 class Terminal:
@@ -43,20 +134,7 @@ class Terminal:
         if timeout is not None:
             args.append(str(timeout))
 
-        def become_terminal_owner():
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-            if ignore_signal is not None:
-                signal.signal(ignore_signal, signal.SIG_IGN)
-
-        self.process = subprocess.Popen(
-            args,
-            stdin=self.slave,
-            stdout=self.slave,
-            stderr=self.slave,
-            start_new_session=True,
-            preexec_fn=become_terminal_owner,
-            env=TEST_ENV,
-        )
+        self.process = App(args, self.slave, ignore_signal)
 
     def resize(self, cols, rows):
         # Setting the size on a terminal makes the kernel send SIGWINCH to its program.
@@ -84,7 +162,7 @@ class Terminal:
         except FileNotFoundError:
             return []
 
-    def wait_for_log(self, line, seconds=3):
+    def wait_for_log(self, line, seconds=5):
         """Waits until the log contains a line, then returns True."""
         deadline = time.time() + seconds
         while time.time() < deadline:
@@ -100,26 +178,31 @@ class Terminal:
             code = self.process.poll()
             if code is not None:
                 return code
-        self.process.kill()
-        self.process.wait()
         return "timed out"
 
     def restored(self):
         return termios.tcgetattr(self.slave) == self.settings_before
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait()
+        self.process.stop()
         os.close(self.master)
         os.close(self.slave)
         self.dir.cleanup()
 
 
+def report_failure(message):
+    failures.append(message)
+    print("    FAIL:", message)
+    # On GitHub, this becomes an annotation. Job logs are only visible to repo admins,
+    # but anyone can read annotations, and they appear on the run's summary page.
+    if os.environ.get("GITHUB_ACTIONS"):
+        text = "%s: %s" % (current_test, message)
+        print("::error::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))
+
+
 def check(condition, message):
     if not condition:
-        failures.append(message)
-        print("    FAIL:", message)
+        report_failure(message)
 
 
 def is_raw(term):
@@ -366,7 +449,9 @@ def test_suspend_under_a_real_shell():
 
     with tempfile.TemporaryDirectory() as folder:
         log = os.path.join(folder, "log")
-        script = 'set -m; "$1" "$2"; echo AFTER-STOP; sleep 0.3; fg; echo AFTER-FG'
+        # The sleep at the end keeps the shell, the session leader here, alive for the final
+        # check. See the comment above HOLDER.
+        script = 'set -m; "$1" "$2"; echo AFTER-STOP; sleep 0.3; fg; echo AFTER-FG; sleep 1'
         shell = subprocess.Popen(
             ["bash", "-c", script, "bash", APP, log],
             stdin=slave, stdout=slave, stderr=slave,
@@ -407,9 +492,9 @@ def test_suspend_under_a_real_shell():
 
         os.write(master, b"\x11")
         check(pump(until_text=b"AFTER-FG"), "the app did not finish")
-        code = shell.wait(timeout=3)
-        check(code == 0, "shell exit status was %s" % code)
         check(termios.tcgetattr(slave) == before, "terminal settings were not restored at the end")
+        code = shell.wait(timeout=5)
+        check(code == 0, "shell exit status was %s" % code)
     os.close(master)
     os.close(slave)
 
@@ -418,9 +503,15 @@ TESTS = [value for name, value in sorted(globals().items()) if name.startswith("
 
 
 def main():
+    global current_test
     for test in TESTS:
-        print("  " + test.__name__)
-        test()
+        current_test = test.__name__
+        print("  " + test.__name__, flush=True)
+        # One test blowing up mustn't hide the results of the others.
+        try:
+            test()
+        except Exception:
+            report_failure("crashed with:\n" + traceback.format_exc())
     print("%s: %d e2e tests, %d failed" % ("FAILED" if failures else "ok", len(TESTS), len(failures)))
     sys.exit(1 if failures else 0)
 

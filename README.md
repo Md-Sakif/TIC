@@ -343,14 +343,13 @@ The code targets Linux, macOS, the BSDs and Windows 10 or newer, on any terminal
 
 | Platform | Status |
 |---|---|
-| Linux (gcc, clang, g++, sanitizers) | All tests pass, including in real pseudo-terminals |
-| Windows (MinGW build) | Compiles. Unit tests and most of the console test pass under Wine, but Wine isn't real Windows |
-| Windows (real console) | **Not run yet.** CI will do this |
-| Windows (MSVC) | **Not compiled yet.** CI will do this |
-| macOS | **Not run yet.** CI will do this |
+| Linux (gcc, clang, g++, sanitizers) | All tests pass, locally and in CI, including in real pseudo-terminals |
+| Windows (MinGW) | All tests pass in CI, including in a real console through ConPTY |
+| Windows (MSVC, as C and C++) | All tests pass in CI, including in a real console through ConPTY |
+| macOS (clang) | Unit tests, the C++ build and link modes pass in CI. **The pseudo-terminal tests haven't passed yet** |
 | BSDs | Not tested, and not in CI |
 
-The CI workflow is in `.github/workflows/ci.yml` and starts working once the repository is pushed to GitHub. Treat macOS and real Windows as unproven until that has passed.
+Nobody has yet looked at the output on a real Windows or macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
 
 ## Limitations
 
