@@ -6,12 +6,14 @@ A terminal UI library for C and C++ that's a single header file. Copy `cterm.h` 
 ╭─ Search ───────────────────────────────────────────────────╮
 │an                                                          │
 ╰────────────────────────────────────────────────────────────╯
-╭─ 7 matches ─────────────╮╭─ Details ───────────────────────╮
+╭─ 6 matches ─────────────╮╭─ Details ───────────────────────╮
 │Banana                   ││Banana                          █│
 │Cranberry                ││                                █│
-│Mango                    ││Line 1 of the details...        ││
-│আম (mango, Bengali)      ││Line 2 of the details...        ││
-╰─────────────────────────╯╰────────────────────────────────╯
+│Mango                    ││Line 1 of the details...        █│
+│Orange                   ││Line 2 of the details...        ││
+│Pomegranate              ││Line 3 of the details...        ││
+│Tangerine                ││Line 4 of the details...        ││
+╰─────────────────────────╯╰─────────────────────────────────╯
 ```
 
 **Part 1** of this README is for people using cterm in an app. **Part 2** is for anyone changing cterm itself.
