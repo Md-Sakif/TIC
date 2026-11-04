@@ -1,13 +1,52 @@
 /* cterm.h - a cross-platform, single-header terminal UI library for C and C++.
  *
+ * HOW TO USE IT
+ *
  * In exactly one source file, before any other #include:
  *
  *     #define CTERM_IMPLEMENTATION
  *     #include "cterm.h"
  *
- * Every other file just does #include "cterm.h".
+ * Every other file just does #include "cterm.h". There's nothing else to build or
+ * link. README.md is the full guide, and every function is documented where it's
+ * declared in the PUBLIC API section below.
  *
- * See README.md for the guide. License: MIT, see the end of this file.
+ * OPTIONS
+ *
+ * Define these before including the header.
+ *
+ * In every file:
+ *   CTERM_NO_UI            leave out the layout and widget layer
+ *   CTERM_MAX_MARKS        combining marks per character (default 3)
+ *   CTERM_UI_MAX_WIDGETS   focusable widgets per frame (default 128)
+ *   CTERM_API              what goes in front of public functions
+ *
+ * Only where CTERM_IMPLEMENTATION is defined:
+ *   CTERM_STATIC           make everything private to this file
+ *   CTERM_MALLOC, CTERM_REALLOC, CTERM_FREE   your own allocator (all three)
+ *   CTERM_ESC_TIMEOUT_MS   how long a lone ESC waits to be the Esc key (default 50)
+ *   CTERM_PASTE_TIMEOUT_MS how long a stalled paste waits (default 500)
+ *   CTERM_PASTE_MAX        the longest paste kept, in bytes (default 16 MiB)
+ *
+ * MAP OF THIS FILE
+ *
+ * To find a section, search for its name in capitals.
+ *
+ *   PUBLIC API                  everything an app can call
+ *   IMPLEMENTATION              starts here
+ *     UNICODE                   UTF-8 and character widths (generated tables)
+ *     STYLES AND RECTANGLES     small helpers
+ *     CELL BUFFERS AND DRAWING  the grid apps draw on
+ *     RENDERER                  buffer -> escape sequences; no terminal needed
+ *     INPUT PARSER              bytes -> events; no terminal needed
+ *     PLATFORM LAYER            all the OS-specific code (POSIX and Windows)
+ *     LIFECYCLE                 cterm_init, cterm_shutdown, cterm_present
+ *     EVENT LOOP                cterm_poll: timing on top of the parser
+ *     LAYOUT                    splitting rectangles
+ *     WIDGET CORE               focus, and event routing
+ *     TEXT INPUT, LIST, SCROLLABLE VIEW
+ *
+ * Licence: MIT, see the end of this file.
  */
 
 /* ------------------------------------------------------------------------- *
@@ -306,9 +345,9 @@ typedef enum cterm_event_type {
     CTERM_EVENT_NONE = 0,
     CTERM_EVENT_KEY,     /* a key press: see `key` and `mods` */
     CTERM_EVENT_MOUSE,   /* see `action`, `button`, `x`, `y` and `mods` */
-    CTERM_EVENT_RESIZE,  /* the terminal changed size, or came back after being
-                            suspended: see `width` and `height`. The screen has
-                            been blanked, so draw everything again. */
+    CTERM_EVENT_RESIZE,  /* the terminal changed size, or the app came back after
+                            being suspended: see `width` and `height`. Draw
+                            everything again. */
     CTERM_EVENT_PASTE    /* text was pasted: see `text` and `text_length` */
 } cterm_event_type;
 
@@ -2256,6 +2295,15 @@ static int cterm__win_special_key(WORD vk, DWORD control, unsigned char *out) {
         out[0] = 0;
         return 1;
     }
+
+    /* These usually come with a character, but not on every console. */
+    switch (vk) {
+        case VK_ESCAPE: out[0] = CTERM__ESC; return 1;
+        case VK_RETURN: out[0] = 0x0D; return 1;
+        case VK_TAB:    out[0] = 0x09; return 1;
+        case VK_BACK:   out[0] = 0x7F; return 1;
+        default:        break;
+    }
     for (i = 0; i < (int)(sizeof keys / sizeof keys[0]); i++) {
         if (keys[i].vk == vk) {
             char *text = (char *)out;
@@ -2393,6 +2441,7 @@ static void cterm__emergency_reenter(void) {
     while (mouse[mouse_length]) mouse_length++; /* strlen isn't on the safe list */
     tcsetattr(STDIN_FILENO, TCSANOW, &cterm__raw_termios);
     ignored = write(STDOUT_FILENO, CTERM__ENTER_SEQUENCE, sizeof CTERM__ENTER_SEQUENCE - 1);
+    (void)ignored;
     ignored = write(STDOUT_FILENO, mouse, mouse_length);
     (void)ignored;
     cterm__entered = 1;
@@ -2705,6 +2754,9 @@ CTERM_API int cterm_init(void) {
 
     if (cterm__update_size() < 0) {
         cterm__plat_shutdown();
+        CTERM_FREE(cterm__term.back.cells);
+        CTERM_FREE(cterm__term.front.cells);
+        memset(&cterm__term, 0, sizeof cterm__term);
         return -1;
     }
     cterm__render_state_reset(&cterm__term.render);
@@ -2774,6 +2826,13 @@ CTERM_API void cterm_set_color_mode(cterm_color_mode mode) {
 
 CTERM_API int cterm_present(void) {
     if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
+
+    /* If memory ran out during a resize, one buffer may have the new size and the
+     * other the old. The renderer needs them to match, so fix that first or stop. */
+    if (cterm__term.front.width != cterm__term.back.width || cterm__term.front.height != cterm__term.back.height) {
+        if (cterm_buffer_resize(&cterm__term.front, cterm__term.back.width, cterm__term.back.height) != 0) return -1;
+        cterm__term.repaint = 1;
+    }
 
     cterm__term.out.len = 0;
     cterm__render(&cterm__term.out, &cterm__term.front, &cterm__term.back, &cterm__term.render,
@@ -3597,3 +3656,27 @@ CTERM_API void cterm_ui_scroll_end(cterm_ui *ui, cterm_scroll *scroll) {
 
 #endif /* CTERM_IMPLEMENTATION_DONE */
 #endif /* CTERM_IMPLEMENTATION */
+
+/*
+MIT License
+
+Copyright (c) 2026 sakif
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/

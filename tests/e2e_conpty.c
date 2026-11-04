@@ -193,11 +193,15 @@ int main(int argc, char **argv) {
         if (!found) fail("\"frame-marker\" never reached the screen");
     }
 
-    printf("  resize\n");
-    size.X = 100;
-    size.Y = 30;
-    ResizePseudoConsole(console, size);
-    expect("resize 100 30");
+    /* Wine 10's ResizePseudoConsole changes nothing, even in a program that doesn't use
+     * cterm. So this can only be checked on real Windows. */
+    if (!running_on_wine()) {
+        printf("  resize\n");
+        size.X = 100;
+        size.Y = 30;
+        ResizePseudoConsole(console, size);
+        expect("resize 100 30");
+    }
 
     printf("  suspend is refused on Windows\n");
     send_bytes("\x13", 1);

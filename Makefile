@@ -26,8 +26,7 @@ SANITIZE = -fsanitize=address,undefined -fno-sanitize-recover=all
 
 BUILD = build
 TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui test_alloc
-DEMOS = keys dashboard widgets
-E2E_APPS = e2e_app
+DEMOS = hello keys dashboard widgets
 
 .PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
 
@@ -68,6 +67,10 @@ test-cpp:
 		$(CXX) $(CXXFLAGS) tests/$$t.c -o $(BUILD)/cpp/$$t; \
 		printf '%-20s' $$t; $(BUILD)/cpp/$$t; \
 	done
+	@set -e; for d in $(DEMOS); do \
+		$(CXX) $(CXXFLAGS) demo/$$d.c -o $(BUILD)/cpp/$$d; \
+	done
+	$(CXX) $(CXXFLAGS) tests/e2e_app.c -o $(BUILD)/cpp/e2e_app
 
 # Proves every documented way of including the header compiles and links.
 LINK = tests/link
@@ -116,7 +119,7 @@ test-windows: windows
 	done
 
 e2e-windows: windows
-	cd $(BUILD)/windows && $(WINE) e2e_conpty.exe e2e_app.exe
+	cd $(BUILD)/windows && $(WINE) ./e2e_conpty.exe ./e2e_app.exe
 
 check-readme:
 	$(PYTHON) tests/check_readme.py $(CC)

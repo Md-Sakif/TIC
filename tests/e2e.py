@@ -23,6 +23,11 @@ import time
 APP = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "build/e2e_app")
 failures = []
 
+# Sanitizer builds have their own crash handlers, which report the crash and exit with
+# status 1. cterm chains to them correctly, but the crash tests also check the exit
+# status, so ask the sanitizer to leave those signals alone.
+TEST_ENV = dict(os.environ, ASAN_OPTIONS="handle_segv=0:handle_sigbus=0:handle_sigfpe=0:handle_abort=0")
+
 
 class Terminal:
     """A pseudo-terminal with one program running inside it."""
@@ -50,6 +55,7 @@ class Terminal:
             stderr=self.slave,
             start_new_session=True,
             preexec_fn=become_terminal_owner,
+            env=TEST_ENV,
         )
 
     def resize(self, cols, rows):
