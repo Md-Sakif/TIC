@@ -346,7 +346,7 @@ The code targets Linux, macOS, the BSDs and Windows 10 or newer, on any terminal
 | Linux (gcc, clang, g++, sanitizers) | All tests pass, locally and in CI, including in real pseudo-terminals |
 | Windows (MinGW) | All tests pass in CI, including in a real console through ConPTY |
 | Windows (MSVC, as C and C++) | All tests pass in CI, including in a real console through ConPTY |
-| macOS (clang) | Unit tests, the C++ build and link modes pass in CI. **The pseudo-terminal tests haven't passed yet** |
+| macOS (clang) | All tests pass in CI, including in real pseudo-terminals. The test using real `bash` is skipped if the installed version is older than 4.4 |
 | BSDs | Not tested, and not in CI |
 
 Nobody has yet looked at the output on a real Windows or macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
@@ -436,6 +436,14 @@ Debian and Ubuntu packages: `gcc-mingw-w64-x86-64` for the cross-compiler, and `
 ### Known Wine differences
 
 Wine is useful, but it isn't Windows. `tests/e2e_conpty.c` skips two checks there, because Wine 10 gets them wrong even in programs that don't use cterm: it drops Ctrl+C, after which console waits stop working, and `ResizePseudoConsole` has no effect. Wine's console also doesn't interpret escape sequences as Windows 10 does, so it can't show how the output looks. Only trust real Windows for those.
+
+### Known macOS differences
+
+Three things in `tests/e2e.py` exist because macOS behaves differently from Linux:
+
+- **Session leaders:** macOS revokes a terminal when the process that owns it exits, so its settings can't be read afterwards. The tests run the app under a small holder process for this reason.
+- **`PENDIN`:** the settings comparison forgives this one kernel status bit, and prints a note when it does.
+- **Ctrl+Z:** `tests/e2e.py` has its own small job-control shell, so that test doesn't depend on which `bash` is installed.
 
 ## Writing tests
 
