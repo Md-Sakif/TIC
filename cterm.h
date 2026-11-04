@@ -88,10 +88,6 @@ CTERM_API void cterm_shutdown(void);
 /* A description of the last failure. Never NULL; "" if nothing has failed. */
 CTERM_API const char *cterm_error(void);
 
-/* Reads raw input bytes without waiting. Returns how many were read (0 if none
- * are available) or -1 if the terminal has gone away. */
-CTERM_API int cterm_read(unsigned char *buf, int cap);
-
 /* --- Unicode ------------------------------------------------------------- */
 
 /* How many terminal cells a character takes up: 0 for combining marks, 2 for
@@ -257,6 +253,102 @@ CTERM_API int cterm_present(void);
  * has scribbled on the screen. Apps often bind this to Ctrl+L. */
 CTERM_API void cterm_redraw(void);
 
+/* --- Events -------------------------------------------------------------- */
+
+typedef enum cterm_event_type {
+    CTERM_EVENT_NONE = 0,
+    CTERM_EVENT_KEY,     /* a key press: see `key` and `mods` */
+    CTERM_EVENT_MOUSE,   /* see `action`, `button`, `x`, `y` and `mods` */
+    CTERM_EVENT_RESIZE,  /* the terminal changed size, or came back after being
+                            suspended: see `width` and `height`. The screen has
+                            been blanked, so draw everything again. */
+    CTERM_EVENT_PASTE    /* text was pasted: see `text` and `text_length` */
+} cterm_event_type;
+
+/* Values of event.key for keys that aren't text. Text keys hold their Unicode
+ * code point instead, for example 'a' or 0x995. These all sit above the largest
+ * code point, so the two can never be confused. */
+enum {
+    CTERM_KEY_ENTER = 0x110000,
+    CTERM_KEY_TAB,        /* Shift+Tab is CTERM_KEY_TAB with CTERM_MOD_SHIFT */
+    CTERM_KEY_BACKSPACE,
+    CTERM_KEY_ESC,
+    CTERM_KEY_UP,
+    CTERM_KEY_DOWN,
+    CTERM_KEY_LEFT,
+    CTERM_KEY_RIGHT,
+    CTERM_KEY_HOME,
+    CTERM_KEY_END,
+    CTERM_KEY_PAGE_UP,
+    CTERM_KEY_PAGE_DOWN,
+    CTERM_KEY_INSERT,
+    CTERM_KEY_DELETE,
+    CTERM_KEY_F1, CTERM_KEY_F2, CTERM_KEY_F3, CTERM_KEY_F4,
+    CTERM_KEY_F5, CTERM_KEY_F6, CTERM_KEY_F7, CTERM_KEY_F8,
+    CTERM_KEY_F9, CTERM_KEY_F10, CTERM_KEY_F11, CTERM_KEY_F12
+};
+
+/* Values of event.mods. Combine them with &. Ctrl+C arrives as key 'c' with
+ * CTERM_MOD_CTRL: it doesn't stop the program, so your app decides what it does. */
+enum {
+    CTERM_MOD_SHIFT = 1 << 0,
+    CTERM_MOD_ALT   = 1 << 1,
+    CTERM_MOD_CTRL  = 1 << 2
+};
+
+/* Values of event.action. */
+typedef enum cterm_mouse_action {
+    CTERM_MOUSE_PRESS = 1,
+    CTERM_MOUSE_RELEASE,
+    CTERM_MOUSE_DRAG,        /* moved with a button held */
+    CTERM_MOUSE_MOVE,        /* moved with no button held (needs CTERM_MOUSE_MOTION) */
+    CTERM_MOUSE_SCROLL_UP,
+    CTERM_MOUSE_SCROLL_DOWN,
+    CTERM_MOUSE_SCROLL_LEFT,
+    CTERM_MOUSE_SCROLL_RIGHT
+} cterm_mouse_action;
+
+/* Values of event.button. */
+typedef enum cterm_mouse_button {
+    CTERM_BUTTON_NONE = 0,
+    CTERM_BUTTON_LEFT,
+    CTERM_BUTTON_MIDDLE,
+    CTERM_BUTTON_RIGHT
+} cterm_mouse_button;
+
+/* One input event. Check `type`, then read the fields listed for that type. */
+typedef struct cterm_event {
+    cterm_event_type type;
+    int key;                   /* KEY: a code point, or a CTERM_KEY_ value */
+    int mods;                  /* KEY, MOUSE: CTERM_MOD_ values */
+    int x, y;                  /* MOUSE: the cell under the pointer */
+    cterm_mouse_action action; /* MOUSE */
+    cterm_mouse_button button; /* MOUSE */
+    int width, height;         /* RESIZE */
+    const char *text;          /* PASTE: NUL-terminated and may be invalid UTF-8.
+                                  It's only valid until the next cterm_poll(). */
+    size_t text_length;        /* PASTE: length of text in bytes */
+} cterm_event;
+
+/* Waits for the next event.
+ *   timeout_ms < 0    wait for as long as it takes
+ *   timeout_ms == 0   don't wait
+ *   timeout_ms > 0    wait up to that many milliseconds
+ *
+ * Returns 1 and fills in *event if there was one, 0 if the time ran out, or -1
+ * if the terminal has gone away. Your loop should stop on -1. */
+CTERM_API int cterm_poll(cterm_event *event, int timeout_ms);
+
+/* Mouse reporting is off by default, because turning it on stops the user from
+ * selecting text with the mouse in most terminals. */
+typedef enum cterm_mouse_mode {
+    CTERM_MOUSE_OFF = 0,
+    CTERM_MOUSE_BUTTONS,  /* presses, releases, drags and the scroll wheel */
+    CTERM_MOUSE_MOTION    /* all of that, plus movement with no button held */
+} cterm_mouse_mode;
+
+CTERM_API void cterm_set_mouse(cterm_mouse_mode mode);
+
 #ifdef __cplusplus
 }
 #endif
@@ -279,6 +371,8 @@ CTERM_API void cterm_redraw(void);
 #ifndef CTERM_IMPLEMENTATION_DONE
 #define CTERM_IMPLEMENTATION_DONE
 
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -292,8 +386,11 @@ CTERM_API void cterm_redraw(void);
   #include <windows.h>
 #else
   #include <errno.h>
+  #include <fcntl.h>
   #include <sys/ioctl.h>
+  #include <sys/select.h>
   #include <termios.h>
+  #include <time.h>
   #include <unistd.h>
 #endif
 
@@ -1069,6 +1166,469 @@ static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffe
 }
 
 /* ========================================================================= *
+ * INPUT PARSER
+ *
+ * Turns the byte stream from the terminal into events. Terminals send plain keys
+ * as themselves and everything else as an "escape sequence":
+ *
+ *     a           the key a
+ *     ESC [ A     the Up arrow
+ *     ESC [ 1 ; 5 A           Ctrl+Up
+ *     ESC [ < 0 ; 10 ; 5 M    left mouse press at column 10, row 5
+ *
+ * Two awkward facts shape the design:
+ *
+ *  1. Bytes arrive in arbitrary pieces, so a sequence can be cut in half. The
+ *     parser keeps unused bytes until the rest arrive.
+ *
+ *  2. The Esc key sends a single ESC byte, which is also how every sequence
+ *     starts. The only way to tell them apart is time: if nothing follows quickly,
+ *     it was the Esc key. The parser doesn't know about time. Instead its caller
+ *     passes `flush` = 1 once enough time has gone by, meaning "nothing more is
+ *     coming, so make the best of what you have".
+ *
+ * Like the renderer, this never touches a terminal, so tests can feed it bytes
+ * directly (see tests/test_parser.c).
+ * ========================================================================= */
+
+/* How long to wait after a lone ESC byte before deciding it was the Esc key. Too
+ * short and arrow keys can break over slow connections; too long and Esc feels
+ * laggy. */
+#ifndef CTERM_ESC_TIMEOUT_MS
+  #define CTERM_ESC_TIMEOUT_MS 50
+#endif
+
+/* How long a paste may stall before cterm gives up waiting for its end marker. A
+ * paste that never ends would otherwise swallow all further input. */
+#ifndef CTERM_PASTE_TIMEOUT_MS
+  #define CTERM_PASTE_TIMEOUT_MS 500
+#endif
+
+/* The longest paste kept, in bytes. Anything past this is dropped. */
+#ifndef CTERM_PASTE_MAX
+  #define CTERM_PASTE_MAX (16u * 1024u * 1024u)
+#endif
+
+#define CTERM__ESC 0x1B
+#define CTERM__CSI_MAX 64          /* longer "sequences" are treated as garbage */
+#define CTERM__PASTE_END "\x1b[201~"
+#define CTERM__PASTE_END_LEN 6
+#define CTERM__PASTE_BEGIN_SIGNAL (-1) /* internal: stored in event.key */
+
+typedef struct cterm__parser {
+    unsigned char *data;      /* bytes received but not yet decoded */
+    size_t head, tail, cap;   /* data[head..tail) is the unread part */
+    int in_paste;
+    char *paste;              /* the paste being collected */
+    size_t paste_len, paste_cap;
+} cterm__parser;
+
+static void cterm__parser_free(cterm__parser *p) {
+    CTERM_FREE(p->data);
+    CTERM_FREE(p->paste);
+    memset(p, 0, sizeof *p);
+}
+
+static void cterm__parser_feed(cterm__parser *p, const unsigned char *bytes, size_t n) {
+    /* Slide unread bytes to the front, so the buffer doesn't grow forever. */
+    if (p->head > 0) {
+        size_t unread = p->tail - p->head;
+        if (unread > 0) memmove(p->data, p->data + p->head, unread);
+        p->head = 0;
+        p->tail = unread;
+    }
+    if (p->tail + n > p->cap) {
+        size_t cap = p->cap ? p->cap : 1024;
+        unsigned char *data;
+        while (cap < p->tail + n) cap *= 2;
+        data = (unsigned char *)CTERM_REALLOC(p->data, cap);
+        if (!data) return; /* out of memory: losing input is the only option */
+        p->data = data;
+        p->cap = cap;
+    }
+    if (n > 0) memcpy(p->data + p->tail, bytes, n);
+    p->tail += n;
+}
+
+/* True if there are bytes waiting to be completed. */
+static int cterm__parser_pending(const cterm__parser *p) {
+    return p->in_paste || p->tail > p->head;
+}
+
+static size_t cterm__set_key(cterm_event *ev, int key, int mods, size_t used) {
+    ev->type = CTERM_EVENT_KEY;
+    ev->key = key;
+    ev->mods = mods;
+    return used;
+}
+
+/* Sequences encode modifiers as 1 + bits: 1 Shift, 2 Alt, 4 Ctrl (8 Super, which
+ * is ignored). For example 5 means Ctrl and 6 means Ctrl+Shift. */
+static int cterm__decode_mods(int value) {
+    int bits = value - 1, mods = 0;
+    if (value < 2) return 0;
+    if (bits & 1) mods |= CTERM_MOD_SHIFT;
+    if (bits & 2) mods |= CTERM_MOD_ALT;
+    if (bits & 4) mods |= CTERM_MOD_CTRL;
+    return mods;
+}
+
+/* Maps the bytes that terminals send for Enter, Tab and Ctrl+letter. */
+static size_t cterm__control_key(int c, cterm_event *ev, size_t used) {
+    switch (c) {
+        case 0x0D: return cterm__set_key(ev, CTERM_KEY_ENTER, 0, used);
+        case 0x09: return cterm__set_key(ev, CTERM_KEY_TAB, 0, used);
+        /* Terminals disagree about which byte Backspace sends. Ctrl+H shares 0x08,
+         * but a working Backspace matters much more than Ctrl+H. */
+        case 0x7F:
+        case 0x08: return cterm__set_key(ev, CTERM_KEY_BACKSPACE, 0, used);
+        case 0x00: return cterm__set_key(ev, ' ', CTERM_MOD_CTRL, used);
+        default:   break;
+    }
+    if (c >= 0x01 && c <= 0x1A) return cterm__set_key(ev, 'a' + c - 1, CTERM_MOD_CTRL, used);
+    return cterm__set_key(ev, '\\' + c - 0x1C, CTERM_MOD_CTRL, used); /* 0x1C-0x1F are Ctrl with these four */
+}
+
+/* Fills in a mouse event from the terminal's button code, which packs several
+ * things together: bits 0-1 button, 2 Shift, 3 Alt, 4 Ctrl, 5 motion, 6 wheel. */
+static void cterm__set_mouse(cterm_event *ev, int code, int x, int y, int released) {
+    int low = code & 3;
+    ev->type = CTERM_EVENT_MOUSE;
+    ev->x = x > 0 ? x - 1 : 0; /* terminals count from 1, cterm from 0 */
+    ev->y = y > 0 ? y - 1 : 0;
+    ev->mods = 0;
+    if (code & 4)  ev->mods |= CTERM_MOD_SHIFT;
+    if (code & 8)  ev->mods |= CTERM_MOD_ALT;
+    if (code & 16) ev->mods |= CTERM_MOD_CTRL;
+    ev->button = low == 0 ? CTERM_BUTTON_LEFT : low == 1 ? CTERM_BUTTON_MIDDLE :
+                 low == 2 ? CTERM_BUTTON_RIGHT : CTERM_BUTTON_NONE;
+    if (code & 64) {
+        static const cterm_mouse_action wheel[4] = {
+            CTERM_MOUSE_SCROLL_UP, CTERM_MOUSE_SCROLL_DOWN, CTERM_MOUSE_SCROLL_LEFT, CTERM_MOUSE_SCROLL_RIGHT
+        };
+        ev->action = wheel[low];
+        ev->button = CTERM_BUTTON_NONE;
+    } else if (code & 32) {
+        ev->action = low == 3 ? CTERM_MOUSE_MOVE : CTERM_MOUSE_DRAG;
+    } else if (released) {
+        ev->action = CTERM_MOUSE_RELEASE;
+    } else {
+        ev->action = CTERM_MOUSE_PRESS;
+    }
+}
+
+/* Handles the sequence form that ends in a `~`: ESC [ number ; mods ~ */
+static void cterm__csi_tilde(const int *params, int count, cterm_event *ev) {
+    int mods = count >= 2 ? cterm__decode_mods(params[1]) : 0;
+    int key;
+    switch (count >= 1 ? params[0] : 0) {
+        case 1: case 7: key = CTERM_KEY_HOME; break;
+        case 2:  key = CTERM_KEY_INSERT; break;
+        case 3:  key = CTERM_KEY_DELETE; break;
+        case 4: case 8: key = CTERM_KEY_END; break;
+        case 5:  key = CTERM_KEY_PAGE_UP; break;
+        case 6:  key = CTERM_KEY_PAGE_DOWN; break;
+        case 11: key = CTERM_KEY_F1; break;
+        case 12: key = CTERM_KEY_F2; break;
+        case 13: key = CTERM_KEY_F3; break;
+        case 14: key = CTERM_KEY_F4; break;
+        case 15: key = CTERM_KEY_F5; break;
+        case 17: key = CTERM_KEY_F6; break;
+        case 18: key = CTERM_KEY_F7; break;
+        case 19: key = CTERM_KEY_F8; break;
+        case 20: key = CTERM_KEY_F9; break;
+        case 21: key = CTERM_KEY_F10; break;
+        case 23: key = CTERM_KEY_F11; break;
+        case 24: key = CTERM_KEY_F12; break;
+        case 200:
+            /* The start of a paste. Tell the caller without producing an event. */
+            ev->key = CTERM__PASTE_BEGIN_SIGNAL;
+            return;
+        case 27:
+            /* xterm's "modifyOtherKeys": ESC [ 27 ; mods ; code ~ */
+            if (count >= 3) {
+                int code = params[2];
+                if (code == 13) key = CTERM_KEY_ENTER;
+                else if (code == 9) key = CTERM_KEY_TAB;
+                else if (code == 27) key = CTERM_KEY_ESC;
+                else if (code == 127 || code == 8) key = CTERM_KEY_BACKSPACE;
+                else if (code >= 0x20 && code <= 0x10FFFF) key = code;
+                else return;
+                cterm__set_key(ev, key, mods, 0);
+            }
+            return;
+        default:
+            return; /* a key we don't know: ignore it */
+    }
+    cterm__set_key(ev, key, mods, 0);
+}
+
+/* Handles sequences that end in a letter: ESC [ 1 ; mods A, and the "CSI u" form
+ * some newer terminals use for keys that older protocols couldn't express. */
+static void cterm__csi_letter(int final, const int *params, int count, cterm_event *ev) {
+    int mods = count >= 2 ? cterm__decode_mods(params[1]) : 0;
+    int key;
+    switch (final) {
+        case 'A': key = CTERM_KEY_UP; break;
+        case 'B': key = CTERM_KEY_DOWN; break;
+        case 'C': key = CTERM_KEY_RIGHT; break;
+        case 'D': key = CTERM_KEY_LEFT; break;
+        case 'H': key = CTERM_KEY_HOME; break;
+        case 'F': key = CTERM_KEY_END; break;
+        case 'P': key = CTERM_KEY_F1; break;
+        case 'Q': key = CTERM_KEY_F2; break;
+        case 'R': key = CTERM_KEY_F3; break;
+        case 'S': key = CTERM_KEY_F4; break;
+        case 'Z': key = CTERM_KEY_TAB; mods |= CTERM_MOD_SHIFT; break;
+        case 'u':
+            if (count < 1) return;
+            if (params[0] == 13) key = CTERM_KEY_ENTER;
+            else if (params[0] == 9) key = CTERM_KEY_TAB;
+            else if (params[0] == 27) key = CTERM_KEY_ESC;
+            else if (params[0] == 127 || params[0] == 8) key = CTERM_KEY_BACKSPACE;
+            else if (params[0] >= 0x20 && params[0] <= 0x10FFFF) key = params[0];
+            else return;
+            break;
+        default:
+            return; /* focus reports and so on: not used */
+    }
+    cterm__set_key(ev, key, mods, 0);
+}
+
+/* Parses ESC [ ... Returns the bytes used, or 0 if more are needed. */
+static size_t cterm__parse_csi(const unsigned char *s, size_t n, cterm_event *ev, int flush) {
+    int params[8], count = 0, value = 0, in_value = 0, marker = 0, odd = 0;
+    size_t i, final_at;
+
+    if (n == 2) {
+        return flush ? cterm__set_key(ev, '[', CTERM_MOD_ALT, 2) : 0; /* Alt+[ */
+    }
+
+    /* The Linux console's F1-F5: ESC [ [ A */
+    if (s[2] == '[') {
+        if (n < 4) return flush ? n : 0;
+        if (s[3] >= 'A' && s[3] <= 'E') cterm__set_key(ev, CTERM_KEY_F1 + (s[3] - 'A'), 0, 0);
+        return 4;
+    }
+
+    /* Old-style mouse report: ESC [ M followed by three raw bytes. It's only seen
+     * on terminals that ignore the modern SGR format cterm asks for. */
+    if (s[2] == 'M') {
+        int code;
+        if (n < 6) return flush ? n : 0;
+        code = s[3] >= 32 ? s[3] - 32 : 0;
+        /* This format has no release flag: button number 3 means "released". */
+        cterm__set_mouse(ev, code, s[4] >= 32 ? s[4] - 32 : 0, s[5] >= 32 ? s[5] - 32 : 0,
+                         (code & 3) == 3 && !(code & (32 | 64)));
+        return 6;
+    }
+
+    /* Find the final byte. A valid sequence only has 0x20-0x3F before its final
+     * byte. Anything else means the sequence got cut off, so drop what we have
+     * and let the next call handle that byte normally. */
+    for (i = 2; i < n; i++) {
+        unsigned char c = s[i];
+        if (c >= 0x40 && c <= 0x7E) break;
+        if (c < 0x20 || c > 0x7E) return i;
+        if (i >= CTERM__CSI_MAX) return i;
+    }
+    if (i == n) return flush ? n : 0;
+    final_at = i;
+
+    /* Read the numbers. An optional marker character comes first, and numbers are
+     * separated by `;`. A `:` introduces extra detail that cterm doesn't need. */
+    i = 2;
+    if (s[i] >= 0x3C && s[i] <= 0x3F) marker = s[i++];
+    for (; i < final_at; i++) {
+        unsigned char c = s[i];
+        if (c >= '0' && c <= '9') {
+            if (value < 100000) value = value * 10 + (c - '0');
+            in_value = 1;
+        } else if (c == ';' || c == ':') {
+            if (count < 8) params[count++] = value;
+            value = 0;
+            in_value = 0;
+            if (c == ':') {
+                /* Skip the detail, including the `;` that ends it. */
+                while (i + 1 < final_at && s[i + 1] != ';') i++;
+                if (i + 1 < final_at) i++;
+            }
+        } else {
+            odd = 1; /* an intermediate byte: not a sequence we use */
+        }
+    }
+    if ((in_value || count > 0) && count < 8) params[count++] = value;
+
+    if (!odd) {
+        int final = s[final_at];
+        if (marker == '<') {
+            if ((final == 'M' || final == 'm') && count >= 3) {
+                cterm__set_mouse(ev, params[0], params[1], params[2], final == 'm');
+            }
+        } else if (marker == 0) {
+            if (final == '~') cterm__csi_tilde(params, count, ev);
+            else cterm__csi_letter(final, params, count, ev);
+        }
+    }
+    return final_at + 1;
+}
+
+/* Parses ESC O ..., used by F1-F4, and by arrows in "application mode". */
+static size_t cterm__parse_ss3(const unsigned char *s, size_t n, cterm_event *ev, int flush) {
+    size_t at = 2;
+    int mods = 0, key;
+    if (n == 2) return flush ? cterm__set_key(ev, 'O', CTERM_MOD_ALT, 2) : 0; /* Alt+O */
+
+    /* Some terminals put a modifier digit in the middle: ESC O 5 A */
+    if (s[2] >= '0' && s[2] <= '9') {
+        if (n == 3) return flush ? n : 0;
+        mods = cterm__decode_mods(s[2] - '0');
+        at = 3;
+    }
+    switch (s[at]) {
+        case 'A': key = CTERM_KEY_UP; break;
+        case 'B': key = CTERM_KEY_DOWN; break;
+        case 'C': key = CTERM_KEY_RIGHT; break;
+        case 'D': key = CTERM_KEY_LEFT; break;
+        case 'H': key = CTERM_KEY_HOME; break;
+        case 'F': key = CTERM_KEY_END; break;
+        case 'P': key = CTERM_KEY_F1; break;
+        case 'Q': key = CTERM_KEY_F2; break;
+        case 'R': key = CTERM_KEY_F3; break;
+        case 'S': key = CTERM_KEY_F4; break;
+        case 'M': key = CTERM_KEY_ENTER; break; /* keypad Enter */
+        default:  return at + 1;                /* unknown: ignore */
+    }
+    return cterm__set_key(ev, key, mods, at + 1);
+}
+
+/* Parses one thing from the start of `s` (n >= 1).
+ *
+ * Returns the bytes consumed, with *ev filled in if they made an event. Bytes can
+ * be consumed with no event, when they were a sequence that doesn't matter here.
+ * Returns 0 if more bytes are needed, which can't happen when `flush` is set: then
+ * it always consumes something, and that's what guarantees the parser never gets
+ * stuck. */
+static size_t cterm__parse_one(const unsigned char *s, size_t n, cterm_event *ev, int flush) {
+    unsigned char c = s[0];
+
+    if (c == CTERM__ESC) {
+        size_t used;
+        if (n == 1) return flush ? cterm__set_key(ev, CTERM_KEY_ESC, 0, 1) : 0;
+        if (s[1] == '[') return cterm__parse_csi(s, n, ev, flush);
+        if (s[1] == 'O') return cterm__parse_ss3(s, n, ev, flush);
+        if (s[1] == CTERM__ESC) {
+            /* ESC ESC [ A is Alt+Up on some terminals. Otherwise it's the Esc key
+             * pressed twice, so give back the first and handle the second later. */
+            if (n == 2) return flush ? cterm__set_key(ev, CTERM_KEY_ESC, 0, 1) : 0;
+            if (s[2] != '[' && s[2] != 'O') return cterm__set_key(ev, CTERM_KEY_ESC, 0, 1);
+        }
+        /* ESC followed by a normal key is how terminals report Alt+key. */
+        used = cterm__parse_one(s + 1, n - 1, ev, flush);
+        if (used == 0) return 0;
+        if (ev->type == CTERM_EVENT_KEY) ev->mods |= CTERM_MOD_ALT;
+        return used + 1;
+    }
+
+    if (c < 0x20 || c == 0x7F) return cterm__control_key(c, ev, 1);
+
+    {
+        uint32_t cp = CTERM__REPLACEMENT;
+        int used = cterm__utf8_decode(s, n, &cp);
+        if (used == 0) {
+            if (!flush) return 0;
+            cp = CTERM__REPLACEMENT;
+            used = 1;
+        }
+        return cterm__set_key(ev, (int)cp, 0, (size_t)used);
+    }
+}
+
+/* Adds bytes to the paste being collected. */
+static void cterm__paste_append(cterm__parser *p, const unsigned char *bytes, size_t n) {
+    if (p->paste_len + n > CTERM_PASTE_MAX) {
+        n = CTERM_PASTE_MAX - p->paste_len;
+    }
+    if (p->paste_len + n + 1 > p->paste_cap) {
+        size_t cap = p->paste_cap ? p->paste_cap : 1024;
+        char *data;
+        while (cap < p->paste_len + n + 1) cap *= 2;
+        data = (char *)CTERM_REALLOC(p->paste, cap);
+        if (!data) return;
+        p->paste = data;
+        p->paste_cap = cap;
+    }
+    if (n > 0) memcpy(p->paste + p->paste_len, bytes, n);
+    p->paste_len += n;
+    p->paste[p->paste_len] = '\0';
+}
+
+static void cterm__paste_finish(cterm__parser *p, cterm_event *ev) {
+    cterm__paste_append(p, NULL, 0); /* makes sure there's a buffer and a NUL */
+    p->in_paste = 0;
+    ev->type = CTERM_EVENT_PASTE;
+    ev->text = p->paste ? p->paste : "";
+    ev->text_length = p->paste ? p->paste_len : 0;
+}
+
+/* Collects paste bytes up to the end marker. Returns 1 when the paste is complete
+ * and *ev has been filled in, or 0 if it needs more bytes. */
+static int cterm__paste_step(cterm__parser *p, cterm_event *ev, int flush) {
+    const unsigned char *s = p->data + p->head;
+    size_t n = p->tail - p->head, i;
+
+    for (i = 0; i + CTERM__PASTE_END_LEN <= n; i++) {
+        if (s[i] == CTERM__ESC && memcmp(s + i, CTERM__PASTE_END, CTERM__PASTE_END_LEN) == 0) {
+            cterm__paste_append(p, s, i);
+            p->head += i + CTERM__PASTE_END_LEN;
+            cterm__paste_finish(p, ev);
+            return 1;
+        }
+    }
+
+    if (flush) {
+        cterm__paste_append(p, s, n);
+        p->head = p->tail;
+        cterm__paste_finish(p, ev);
+        return 1;
+    }
+
+    /* The last few bytes could be the start of the marker, so they have to wait.
+     * Everything before them is definitely text. */
+    if (n > CTERM__PASTE_END_LEN - 1) {
+        size_t safe = n - (CTERM__PASTE_END_LEN - 1);
+        cterm__paste_append(p, s, safe);
+        p->head += safe;
+    }
+    return 0;
+}
+
+/* Gets the next event from the bytes fed so far. Returns 1 and fills in *ev, or 0
+ * if there isn't a complete one yet. With `flush` set, incomplete input is resolved
+ * as well as it can be. */
+static int cterm__parser_next(cterm__parser *p, cterm_event *ev, int flush) {
+    memset(ev, 0, sizeof *ev);
+    for (;;) {
+        size_t n, used;
+        if (p->in_paste) return cterm__paste_step(p, ev, flush);
+
+        n = p->tail - p->head;
+        if (n == 0) return 0;
+
+        used = cterm__parse_one(p->data + p->head, n, ev, flush);
+        if (used == 0) return 0;
+        p->head += used;
+
+        if (ev->type != CTERM_EVENT_NONE) return 1;
+        if (ev->key == CTERM__PASTE_BEGIN_SIGNAL) {
+            ev->key = 0;
+            p->in_paste = 1;
+            p->paste_len = 0;
+        }
+    }
+}
+
+/* ========================================================================= *
  * PLATFORM LAYER
  *
  * Everything that differs between operating systems lives here, behind these
@@ -1076,11 +1636,19 @@ static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffe
  *
  *   cterm__plat_init       enter raw mode; 0 on success, -1 via cterm__fail()
  *   cterm__plat_shutdown   undo cterm__plat_init
- *   cterm__plat_read       read available input as UTF-8/VT bytes without
- *                          waiting; >0 bytes, 0 none, -1 terminal gone
+ *   cterm__plat_wait       wait up to timeout_ms (forever if negative) for input,
+ *                          and read it as UTF-8 and escape sequences: >0 bytes,
+ *                          0 nothing yet (a timeout, or a wake-up with no input),
+ *                          -1 the terminal has gone
  *   cterm__plat_write      write all the bytes; 0 on success, -1 on failure
  *   cterm__plat_size       get the terminal's size in cells
+ *   cterm__plat_now_ms     a clock that only moves forward, in milliseconds
+ *
+ * It sets cterm__resize_pending when the terminal changes size.
  * ========================================================================= */
+
+/* sig_atomic_t because a signal handler sets it on POSIX. */
+static volatile sig_atomic_t cterm__resize_pending = 0;
 #if defined(_WIN32)
 
 /* ------------------------------ Windows ---------------------------------- */
@@ -1159,23 +1727,82 @@ static int cterm__win_put_utf16(unsigned char *out, WCHAR unit) {
     return cterm__utf8_encode(cp, (char *)out);
 }
 
-static int cterm__plat_read(unsigned char *buf, int cap) {
+/* Writes the escape sequence for a special key that arrived as a Windows
+ * "virtual key" instead of text. With ENABLE_VIRTUAL_TERMINAL_INPUT the console
+ * already does this for us, so this is the fallback for consoles that lack it.
+ * Going through escape sequences means there's still only one input parser.
+ * Returns the bytes written (up to 16), or 0 for a key cterm doesn't use. */
+static int cterm__win_special_key(WORD vk, DWORD control, unsigned char *out) {
+    static const struct { WORD vk; char final; int tilde; } keys[] = {
+        { VK_UP, 'A', 0 }, { VK_DOWN, 'B', 0 }, { VK_RIGHT, 'C', 0 }, { VK_LEFT, 'D', 0 },
+        { VK_HOME, 'H', 0 }, { VK_END, 'F', 0 },
+        { VK_F1, 'P', 0 }, { VK_F2, 'Q', 0 }, { VK_F3, 'R', 0 }, { VK_F4, 'S', 0 },
+        { VK_INSERT, 0, 2 }, { VK_DELETE, 0, 3 }, { VK_PRIOR, 0, 5 }, { VK_NEXT, 0, 6 },
+        { VK_F5, 0, 15 }, { VK_F6, 0, 17 }, { VK_F7, 0, 18 }, { VK_F8, 0, 19 },
+        { VK_F9, 0, 20 }, { VK_F10, 0, 21 }, { VK_F11, 0, 23 }, { VK_F12, 0, 24 }
+    };
+    int mods = 1, i;
+    if (control & SHIFT_PRESSED) mods += 1;
+    if (control & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) mods += 2;
+    if (control & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) mods += 4;
+
+    /* Ctrl+Space reports no character on Windows. POSIX terminals send a NUL. */
+    if (vk == VK_SPACE && (control & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) {
+        out[0] = 0;
+        return 1;
+    }
+    for (i = 0; i < (int)(sizeof keys / sizeof keys[0]); i++) {
+        if (keys[i].vk == vk) {
+            char *text = (char *)out;
+            if (keys[i].tilde) return snprintf(text, 16, "\x1b[%d;%d~", keys[i].tilde, mods);
+            return snprintf(text, 16, "\x1b[1;%d%c", mods, keys[i].final);
+        }
+    }
+    return 0;
+}
+
+static int cterm__plat_wait(unsigned char *buf, int cap, int timeout_ms) {
     INPUT_RECORD records[64];
-    DWORD available = 0, count = 0, i;
+    DWORD count = 0, i;
     int len = 0;
 
-    if (!GetNumberOfConsoleInputEvents(cterm__hin, &available)) return -1;
-    if (available == 0) return 0;
+    switch (WaitForSingleObject(cterm__hin, timeout_ms < 0 ? INFINITE : (DWORD)timeout_ms)) {
+        case WAIT_OBJECT_0: break;
+        case WAIT_TIMEOUT:  return 0;
+        default:            return -1;
+    }
     if (!ReadConsoleInputW(cterm__hin, records, 64, &count)) return -1;
 
     for (i = 0; i < count; i++) {
-        const KEY_EVENT_RECORD *key;
-        int repeat;
-        if (records[i].EventType != KEY_EVENT) continue;
-        key = &records[i].Event.KeyEvent;
-        if (!key->bKeyDown || key->uChar.UnicodeChar == 0) continue;
-        for (repeat = key->wRepeatCount; repeat > 0 && len + 4 <= cap; repeat--) {
-            len += cterm__win_put_utf16(buf + len, key->uChar.UnicodeChar);
+        if (records[i].EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            cterm__resize_pending = 1;
+        } else if (records[i].EventType == KEY_EVENT) {
+            const KEY_EVENT_RECORD *key = &records[i].Event.KeyEvent;
+            WCHAR unit = key->uChar.UnicodeChar;
+            int repeat = key->wRepeatCount;
+
+            /* A character typed with Alt+numpad arrives on the release of Alt. */
+            int down = key->bKeyDown || (key->wVirtualKeyCode == VK_MENU && unit != 0);
+            if (!down) continue;
+
+            for (; repeat > 0 && len + 16 <= cap; repeat--) {
+                if (unit == 0) {
+                    len += cterm__win_special_key(key->wVirtualKeyCode, key->dwControlKeyState, buf + len);
+                } else {
+                    if (!cterm__vt_input) {
+                        /* Without VT input we have to build these ourselves. */
+                        if (unit == '\t' && (key->dwControlKeyState & SHIFT_PRESSED)) {
+                            memcpy(buf + len, "\x1b[Z", 3);
+                            len += 3;
+                            continue;
+                        }
+                        if (key->dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) {
+                            buf[len++] = CTERM__ESC;
+                        }
+                    }
+                    len += cterm__win_put_utf16(buf + len, unit);
+                }
+            }
         }
     }
     return len;
@@ -1203,14 +1830,73 @@ static void cterm__plat_size(int *width, int *height) {
     }
 }
 
+static uint64_t cterm__plat_now_ms(void) {
+    return GetTickCount64();
+}
+
 #else
 
 /* ------------------------------- POSIX ----------------------------------- */
 
 static struct termios cterm__saved_termios;
 
+/* The "self-pipe trick". A signal can arrive just before select() starts waiting,
+ * and select() would then sleep through it. So the handler also writes a byte to
+ * this pipe, and select() watches the pipe. Even if the signal comes first, the
+ * byte is still there, and select() wakes up at once. */
+static int cterm__wake_pipe[2] = { -1, -1 };
+
+/* Wakes up cterm__plat_wait. Safe to call from a signal handler. */
+static void cterm__wake(void) {
+    if (cterm__wake_pipe[1] >= 0) {
+        char byte = 0;
+        ssize_t ignored = write(cterm__wake_pipe[1], &byte, 1);
+        (void)ignored; /* if the pipe is full, a wake-up is already on its way */
+    }
+}
+
+static struct sigaction cterm__saved_winch;
+
+static void cterm__on_winch(int sig) {
+    int saved_errno = errno; /* the interrupted code may be about to check errno */
+    (void)sig;
+    cterm__resize_pending = 1;
+    cterm__wake();
+    errno = saved_errno;
+}
+
+static void cterm__close_wake_pipe(void) {
+    if (cterm__wake_pipe[0] >= 0) close(cterm__wake_pipe[0]);
+    if (cterm__wake_pipe[1] >= 0) close(cterm__wake_pipe[1]);
+    cterm__wake_pipe[0] = -1;
+    cterm__wake_pipe[1] = -1;
+}
+
+/* Creates the wake-up pipe. Non-blocking, so a full pipe can't hang the handler;
+ * close-on-exec, so programs started by the app don't inherit it. */
+static int cterm__open_wake_pipe(void) {
+    int i;
+    if (pipe(cterm__wake_pipe) != 0) {
+        cterm__wake_pipe[0] = -1;
+        cterm__wake_pipe[1] = -1;
+        return cterm__fail("could not create a pipe");
+    }
+    for (i = 0; i < 2; i++) {
+        fcntl(cterm__wake_pipe[i], F_SETFL, fcntl(cterm__wake_pipe[i], F_GETFL) | O_NONBLOCK);
+        fcntl(cterm__wake_pipe[i], F_SETFD, fcntl(cterm__wake_pipe[i], F_GETFD) | FD_CLOEXEC);
+    }
+    /* select() can't watch descriptors this high. It would mean the app already
+     * has over a thousand files open, so failing is the honest option. */
+    if (cterm__wake_pipe[0] >= FD_SETSIZE) {
+        cterm__close_wake_pipe();
+        return cterm__fail("too many open files for select()");
+    }
+    return 0;
+}
+
 static int cterm__plat_init(void) {
     struct termios raw;
+    struct sigaction action;
 
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
         return cterm__fail("stdin and stdout must both be a terminal");
@@ -1239,8 +1925,10 @@ static int cterm__plat_init(void) {
     raw.c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
     raw.c_cflag |= CS8;
 
-    /* VMIN=0, VTIME=0: read() returns at once, even when there's no input. */
-    raw.c_cc[VMIN]  = 0;
+    /* VMIN=1, VTIME=0: read() returns as soon as there's at least one byte. It's
+     * only called once select() says input is ready, so it never actually waits.
+     * This also makes read() returning 0 mean one thing: the terminal has gone. */
+    raw.c_cc[VMIN]  = 1;
     raw.c_cc[VTIME] = 0;
 
     /* TCSAFLUSH finishes pending output and discards keys typed before now, so
@@ -1248,18 +1936,53 @@ static int cterm__plat_init(void) {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
         return cterm__fail("could not switch the terminal to raw mode");
     }
+
+    if (cterm__open_wake_pipe() != 0) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &cterm__saved_termios);
+        return -1;
+    }
+
+    memset(&action, 0, sizeof action);
+    action.sa_handler = cterm__on_winch;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    sigaction(SIGWINCH, &action, &cterm__saved_winch);
     return 0;
 }
 
 static void cterm__plat_shutdown(void) {
+    sigaction(SIGWINCH, &cterm__saved_winch, NULL);
+    cterm__close_wake_pipe();
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &cterm__saved_termios);
 }
 
-static int cterm__plat_read(unsigned char *buf, int cap) {
-    ssize_t n = read(STDIN_FILENO, buf, (size_t)cap);
-    if (n < 0) {
-        return (errno == EAGAIN || errno == EINTR) ? 0 : -1;
+static int cterm__plat_wait(unsigned char *buf, int cap, int timeout_ms) {
+    fd_set readable;
+    struct timeval timeout;
+    int ready;
+    ssize_t n;
+
+    FD_ZERO(&readable);
+    FD_SET(STDIN_FILENO, &readable);
+    FD_SET(cterm__wake_pipe[0], &readable);
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+
+    /* select() rather than poll(), which is unreliable on terminals on macOS. */
+    ready = select(cterm__wake_pipe[0] + 1, &readable, NULL, NULL, timeout_ms < 0 ? NULL : &timeout);
+    if (ready < 0) return errno == EINTR ? 0 : -1;
+    if (ready == 0) return 0;
+
+    if (FD_ISSET(cterm__wake_pipe[0], &readable)) {
+        char drain[64];
+        ssize_t ignored = read(cterm__wake_pipe[0], drain, sizeof drain);
+        (void)ignored;
     }
+    if (!FD_ISSET(STDIN_FILENO, &readable)) return 0;
+
+    n = read(STDIN_FILENO, buf, (size_t)cap);
+    if (n < 0) return (errno == EINTR || errno == EAGAIN) ? 0 : -1;
+    if (n == 0) return -1; /* the terminal has gone */
     return (int)n;
 }
 
@@ -1287,6 +2010,12 @@ static void cterm__plat_size(int *width, int *height) {
     }
 }
 
+static uint64_t cterm__plat_now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
 #endif /* platform */
 
 /* ========================================================================= *
@@ -1310,9 +2039,12 @@ static struct {
     cterm__sb out;
     cterm__render_state render;
     int repaint; /* the next present must repaint everything */
+    cterm__parser parser;
+    uint64_t pending_since; /* when bytes last arrived for an incomplete sequence */
 } cterm__term;
 
-/* Resizes both buffers to match the terminal. Returns 0 or -1. */
+/* Resizes both buffers to match the terminal. Returns 1 if the size changed, 0 if
+ * it didn't, or -1 if out of memory. */
 static int cterm__update_size(void) {
     int width, height;
     cterm__plat_size(&width, &height);
@@ -1320,7 +2052,7 @@ static int cterm__update_size(void) {
     if (cterm_buffer_resize(&cterm__term.back, width, height) != 0) return -1;
     if (cterm_buffer_resize(&cterm__term.front, width, height) != 0) return -1;
     cterm__term.repaint = 1;
-    return 0;
+    return 1;
 }
 
 CTERM_API int cterm_init(void) {
@@ -1328,7 +2060,7 @@ CTERM_API int cterm_init(void) {
     if (cterm__term.active) return 0;
     if (cterm__plat_init() != 0) return -1;
 
-    if (cterm__update_size() != 0) {
+    if (cterm__update_size() < 0) {
         cterm__plat_shutdown();
         return -1;
     }
@@ -1349,6 +2081,7 @@ CTERM_API void cterm_shutdown(void) {
     CTERM_FREE(cterm__term.back.cells);
     CTERM_FREE(cterm__term.front.cells);
     cterm__sb_free(&cterm__term.out);
+    cterm__parser_free(&cterm__term.parser);
     memset(&cterm__term, 0, sizeof cterm__term);
 }
 
@@ -1380,9 +2113,90 @@ CTERM_API int cterm_present(void) {
     return 0;
 }
 
-CTERM_API int cterm_read(unsigned char *buf, int cap) {
+/* ========================================================================= *
+ * EVENT LOOP
+ * ========================================================================= */
+
+/* How long the parser's incomplete input may wait before being flushed. */
+static uint64_t cterm__pending_limit(const cterm__parser *parser) {
+    return parser->in_paste ? CTERM_PASTE_TIMEOUT_MS : CTERM_ESC_TIMEOUT_MS;
+}
+
+CTERM_API int cterm_poll(cterm_event *event, int timeout_ms) {
+    cterm__parser *parser = &cterm__term.parser;
+    uint64_t start;
+
+    memset(event, 0, sizeof *event);
     if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
-    return cterm__plat_read(buf, cap);
+    start = cterm__plat_now_ms();
+
+    for (;;) {
+        unsigned char bytes[4096];
+        uint64_t now;
+        int wait_ms = -1, got;
+
+        /* A resize comes first: everything drawn from here on should use the new size. */
+        if (cterm__resize_pending) {
+            int changed;
+            cterm__resize_pending = 0;
+            changed = cterm__update_size();
+            if (changed < 0) return -1;
+            if (changed > 0) {
+                event->type = CTERM_EVENT_RESIZE;
+                event->width = cterm__term.back.width;
+                event->height = cterm__term.back.height;
+                return 1;
+            }
+        }
+
+        if (cterm__parser_next(parser, event, 0)) return 1;
+
+        /* Work out how long to sleep: until the caller's deadline, or until an
+         * incomplete sequence has waited long enough, whichever comes first. Time is
+         * measured from when its bytes arrived, not from when this call started. That
+         * way the Esc key still works in an app that polls with a timeout of 0. */
+        now = cterm__plat_now_ms();
+        if (timeout_ms >= 0) {
+            uint64_t elapsed = now - start;
+            wait_ms = elapsed >= (uint64_t)timeout_ms ? 0 : (int)((uint64_t)timeout_ms - elapsed);
+        }
+        if (cterm__parser_pending(parser)) {
+            uint64_t limit = cterm__pending_limit(parser);
+            uint64_t waited = now - cterm__term.pending_since;
+            if (waited >= limit) {
+                if (cterm__parser_next(parser, event, 1)) return 1;
+                continue; /* the leftovers turned out to be ignorable: look again */
+            }
+            if (wait_ms < 0 || (uint64_t)wait_ms > limit - waited) wait_ms = (int)(limit - waited);
+        }
+
+        got = cterm__plat_wait(bytes, (int)sizeof bytes, wait_ms);
+        if (got < 0) return cterm__fail("the terminal has gone away");
+        now = cterm__plat_now_ms();
+        if (got > 0) {
+            cterm__parser_feed(parser, bytes, (size_t)got);
+            cterm__term.pending_since = now;
+            continue;
+        }
+
+        /* Nothing arrived. Stop if the caller's time is up, unless there's something
+         * to deliver right now: a resize, or an incomplete sequence that's now due
+         * (the top of the loop handles both). */
+        if (timeout_ms >= 0 && now - start >= (uint64_t)timeout_ms && !cterm__resize_pending) {
+            int flush_due = cterm__parser_pending(parser) &&
+                            now - cterm__term.pending_since >= cterm__pending_limit(parser);
+            if (!flush_due) return 0;
+        }
+    }
+}
+
+CTERM_API void cterm_set_mouse(cterm_mouse_mode mode) {
+    const char *on = mode == CTERM_MOUSE_BUTTONS ? "\x1b[?1002h\x1b[?1006h" :
+                     mode == CTERM_MOUSE_MOTION  ? "\x1b[?1003h\x1b[?1006h" : "";
+    static const char off[] = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+    if (!cterm__term.active) return;
+    cterm__plat_write(off, sizeof off - 1);
+    cterm__plat_write(on, strlen(on));
 }
 
 #endif /* CTERM_IMPLEMENTATION_DONE */

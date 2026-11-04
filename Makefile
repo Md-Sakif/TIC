@@ -22,8 +22,9 @@ CXXFLAGS = -std=c++11 $(WARN) -g -I. -Itests -x c++
 SANITIZE = -fsanitize=address,undefined -fno-sanitize-recover=all
 
 BUILD = build
-TESTS = test_unicode test_buffer test_render
+TESTS = test_unicode test_buffer test_render test_parser
 DEMOS = keys
+E2E_APPS = e2e_app
 
 .PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan e2e windows test-windows clean
 
@@ -67,8 +68,11 @@ test-cpp:
 
 test-all: test-gcc test-clang test-cpp test-asan
 
-e2e: demos
-	$(PYTHON) tests/e2e.py
+$(BUILD)/e2e_app: tests/e2e_app.c $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) $< -o $@
+
+e2e: demos $(BUILD)/e2e_app
+	$(PYTHON) tests/e2e.py $(BUILD)/e2e_app
 
 windows:
 	@mkdir -p $(BUILD)/windows
