@@ -61,13 +61,62 @@ while control.recv(1):
 """
 
 
+# A miniature job-control shell, for testing Ctrl+Z. It does what a real shell does: it
+# puts the app in its own process group, gives that group the terminal, and waits with
+# WUNTRACED so it hears when the app stops. It then takes the terminal back, and tells
+# the test. When the test says to resume, it gives the terminal back and sends SIGCONT.
+#
+# Being written here means it behaves the same everywhere, whatever bash is installed.
+# It makes a failure easy to read: if this never reports a stop, the app didn't stop.
+JOB_SHELL = r"""
+import fcntl, os, signal, socket, sys, termios
+
+control = socket.socket(fileno=int(sys.argv[1]))
+args = sys.argv[3:]
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)  # or taking the terminal back stops this shell
+shell_group = os.getpgrp()
+
+pid = os.fork()
+if pid == 0:
+    control.close()
+    os.setpgid(0, 0)
+    os.tcsetpgrp(0, os.getpid())
+    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+    os.execv(args[0], args)
+
+try:
+    os.setpgid(pid, pid)  # both sides do this, because either could run first
+except OSError:
+    pass
+os.tcsetpgrp(0, pid)
+control.sendall(b"pid %d\n" % pid)
+
+while True:
+    _, status = os.waitpid(pid, os.WUNTRACED)
+    if not os.WIFSTOPPED(status):
+        control.sendall(b"exit %d\n" % os.waitstatus_to_exitcode(status))
+        break
+    os.tcsetpgrp(0, shell_group)
+    control.sendall(b"stopped %d\n" % os.WSTOPSIG(status))
+    if not control.recv(1):
+        break
+    os.tcsetpgrp(0, pid)
+    os.kill(-pid, signal.SIGCONT)
+
+while control.recv(1):
+    pass
+"""
+
+
 class App:
     """The running app. It has the parts of subprocess.Popen the tests use."""
 
-    def __init__(self, args, terminal_fd, ignore_signal):
+    def __init__(self, args, terminal_fd, ignore_signal, parent_script=HOLDER):
         self.control, holder_end = socket.socketpair()
+        self.stop_signal = None
         self.holder = subprocess.Popen(
-            [sys.executable, "-c", HOLDER, str(holder_end.fileno()), str(ignore_signal or 0)] + args,
+            [sys.executable, "-c", parent_script, str(holder_end.fileno()), str(ignore_signal or 0)] + args,
             stdin=terminal_fd,
             stdout=terminal_fd,
             stderr=terminal_fd,
@@ -95,6 +144,13 @@ class App:
                 self.pid = int(value)
             elif kind == b"exit":
                 self.code = int(value)
+            elif kind == b"stopped":
+                self.stop_signal = int(value)
+
+    def resume(self):
+        """Tells the job-control shell to continue the stopped app."""
+        self.stop_signal = None
+        self.control.sendall(b"c")
 
     def poll(self):
         if self.code is None:
@@ -123,7 +179,7 @@ class App:
 class Terminal:
     """A pseudo-terminal with one program running inside it."""
 
-    def __init__(self, cols=80, rows=24, timeout=None, ignore_signal=None):
+    def __init__(self, cols=80, rows=24, timeout=None, ignore_signal=None, parent_script=HOLDER):
         self.master, self.slave = pty.openpty()
         self.resize(cols, rows)
         self.settings_before = termios.tcgetattr(self.slave)
@@ -134,7 +190,7 @@ class Terminal:
         if timeout is not None:
             args.append(str(timeout))
 
-        self.process = App(args, self.slave, ignore_signal)
+        self.process = App(args, self.slave, ignore_signal, parent_script)
 
     def resize(self, cols, rows):
         # Setting the size on a terminal makes the kernel send SIGWINCH to its program.
@@ -180,14 +236,50 @@ class Terminal:
                 return code
         return "timed out"
 
-    def restored(self):
-        return termios.tcgetattr(self.slave) == self.settings_before
+    def wait_for_stop(self, seconds=5):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.drain(0.01)
+            self.process.poll()
+            if self.process.stop_signal is not None:
+                return True
+        return False
+
+    def settings_changes(self):
+        """Returns "" if the terminal settings are back to how they started."""
+        return settings_difference(self.settings_before, termios.tcgetattr(self.slave))
 
     def close(self):
         self.process.stop()
         os.close(self.master)
         os.close(self.slave)
         self.dir.cleanup()
+
+
+# BSD kernels, which macOS's is based on, can set PENDIN by themselves when a terminal
+# switches to line mode. It means "input is waiting to be reprocessed". It's the kernel's
+# own status rather than a setting, so a restored terminal can have it. Only a difference
+# of exactly this bit is forgiven, and a note is printed whenever that happens.
+PENDIN = getattr(termios, "PENDIN", 0)
+
+
+def settings_difference(before, after):
+    """Returns "" if two sets of terminal settings match, or a description if they don't."""
+    names = ["iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc"]
+    differences = []
+    for name, old, new in zip(names, before, after):
+        if name == "lflag" and (old ^ new) == PENDIN and PENDIN:
+            print("    note: the kernel set PENDIN (expected on BSD and macOS)")
+            continue
+        if old != new:
+            if name == "cc":
+                changed = [i for i, (a, b) in enumerate(zip(old, new)) if a != b]
+                differences.append("cc entries %s" % changed)
+            elif isinstance(old, int) and name.endswith("flag"):
+                differences.append("%s was 0x%x, now 0x%x (changed bits 0x%x)" % (name, old, new, old ^ new))
+            else:
+                differences.append("%s was %s, now %s" % (name, old, new))
+    return "; ".join(differences)
 
 
 def report_failure(message):
@@ -220,7 +312,8 @@ def test_startup_and_shutdown():
     t.send(b"\x11")
     check(t.wait_exit() == 0, "app did not exit cleanly")
     output = t.drain()
-    check(t.restored(), "terminal settings were not restored")
+    difference = t.settings_changes()
+    check(not difference, "terminal settings were not restored: " + difference)
     check(b"\x1b[?1049l" in output, "did not leave the alternate screen")
     check(b"\x1b[?25h" in output, "did not show the cursor again")
     check(b"\x1b[?1006l" in output, "did not turn off mouse reporting")
@@ -366,7 +459,8 @@ def check_crash_recovery(trigger, expected_exit):
     code = t.wait_exit()
     output = t.drain()
     check(code == expected_exit, "exit status was %s, expected %s" % (code, expected_exit))
-    check(t.restored(), "terminal settings were not restored (exit %s)" % code)
+    difference = t.settings_changes()
+    check(not difference, "terminal settings were not restored (exit %s): %s" % (code, difference))
     check(b"\x1b[?1049l" in output, "did not leave the alternate screen (exit %s)" % code)
     check(b"\x1b[?25h" in output, "did not show the cursor again (exit %s)" % code)
     t.close()
@@ -409,7 +503,40 @@ def test_suspend_with_no_shell_keeps_working():
     check(t.wait_for_log("key 97 0"), "input stopped working after the suspend")
     t.send(b"\x11")
     check(t.wait_exit() == 0, "app did not exit cleanly")
-    check(t.restored(), "terminal settings were not restored")
+    difference = t.settings_changes()
+    check(not difference, "terminal settings were not restored: " + difference)
+    t.close()
+
+
+def test_suspend_under_a_job_control_shell():
+    t = Terminal(parent_script=JOB_SHELL)
+    check(t.wait_for_log("ready 80 24"), "app did not start")
+    check(is_raw(t), "terminal should be raw while running")
+    t.drain()
+    t.output = b""
+
+    t.send(b"\x13")
+    if not t.wait_for_stop():
+        check(False, "the app never stopped. Log: %s" % t.log())
+        t.close()
+        return
+    check(t.process.stop_signal == signal.SIGTSTP, "stopped by signal %s" % t.process.stop_signal)
+    output = t.drain(0.1)
+    check(b"\x1b[?1049l" in output, "did not leave the alternate screen before stopping")
+    difference = t.settings_changes()
+    check(not difference, "the shell got a terminal that wasn't restored: " + difference)
+
+    t.output = b""
+    t.process.resume()
+    check(t.wait_for_log("suspend 0"), "cterm_suspend did not return after resuming")
+    check(t.wait_for_log("resize 80 24"), "resuming should ask the app to redraw")
+    check(is_raw(t), "terminal should be raw again after resuming")
+    check(b"\x1b[?1049h" in t.drain(0.1), "did not go back to the alternate screen")
+
+    t.send(b"\x11")
+    check(t.wait_exit() == 0, "app did not exit cleanly")
+    difference = t.settings_changes()
+    check(not difference, "terminal settings were not restored: " + difference)
     t.close()
 
 
@@ -437,9 +564,17 @@ def test_stop_and_continue_signals():
     t.close()
 
 
-def test_suspend_under_a_real_shell():
-    # The real Ctrl+Z flow: a job-control shell runs the app, the app stops, and the
-    # shell gets the terminal back in a normal state and then runs `fg`.
+def test_suspend_under_bash():
+    # The same flow as the job-control test, with a real bash. It's skipped on old versions
+    # (macOS ships 3.2), because a stopped app hung bash on the macOS CI machine, and
+    # job control from `set -m` in a script changed around 4.4. That cause is a suspicion
+    # rather than a proven fact: test_suspend_under_a_job_control_shell is the real check.
+    version = subprocess.check_output(["bash", "-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"]).split()
+    print("    bash %s.%s" % (version[0].decode(), version[1].decode()))
+    if (int(version[0]), int(version[1])) < (4, 4):
+        print("    skipped: this bash is too old")
+        return
+
     master, slave = pty.openpty()
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     before = termios.tcgetattr(slave)
@@ -492,9 +627,15 @@ def test_suspend_under_a_real_shell():
 
         os.write(master, b"\x11")
         check(pump(until_text=b"AFTER-FG"), "the app did not finish")
-        check(termios.tcgetattr(slave) == before, "terminal settings were not restored at the end")
-        code = shell.wait(timeout=5)
-        check(code == 0, "shell exit status was %s" % code)
+        difference = settings_difference(before, termios.tcgetattr(slave))
+        check(not difference, "terminal settings were not restored at the end: " + difference)
+        try:
+            code = shell.wait(timeout=5)
+            check(code == 0, "shell exit status was %s" % code)
+        except subprocess.TimeoutExpired:
+            check(False, "the shell never finished")
+            shell.kill()
+            shell.wait()
     os.close(master)
     os.close(slave)
 
