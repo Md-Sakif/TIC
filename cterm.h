@@ -102,6 +102,161 @@ CTERM_API int cterm_char_width(uint32_t codepoint);
  * because that's how they're drawn. */
 CTERM_API int cterm_text_width(const char *utf8);
 
+/* --- Colours and styles -------------------------------------------------- */
+
+/* A colour is a plain number, so it can be stored and compared freely. Use one
+ * of the names below, CTERM_COLOR256(n) for the 256-colour palette, or
+ * CTERM_RGB(r, g, b) for true colour. */
+typedef uint32_t cterm_color;
+
+#define CTERM_DEFAULT       ((cterm_color)0) /* the terminal's own colour */
+#define CTERM_COLOR256(n)   ((cterm_color)(0x01000000u | ((uint32_t)(n) & 0xFFu)))
+#define CTERM_RGB(r, g, b)  ((cterm_color)(0x02000000u | (((uint32_t)(r) & 0xFFu) << 16) | \
+                             (((uint32_t)(g) & 0xFFu) << 8) | ((uint32_t)(b) & 0xFFu)))
+
+#define CTERM_BLACK          CTERM_COLOR256(0)
+#define CTERM_RED            CTERM_COLOR256(1)
+#define CTERM_GREEN          CTERM_COLOR256(2)
+#define CTERM_YELLOW         CTERM_COLOR256(3)
+#define CTERM_BLUE           CTERM_COLOR256(4)
+#define CTERM_MAGENTA        CTERM_COLOR256(5)
+#define CTERM_CYAN           CTERM_COLOR256(6)
+#define CTERM_WHITE          CTERM_COLOR256(7)
+#define CTERM_BRIGHT_BLACK   CTERM_COLOR256(8)
+#define CTERM_BRIGHT_RED     CTERM_COLOR256(9)
+#define CTERM_BRIGHT_GREEN   CTERM_COLOR256(10)
+#define CTERM_BRIGHT_YELLOW  CTERM_COLOR256(11)
+#define CTERM_BRIGHT_BLUE    CTERM_COLOR256(12)
+#define CTERM_BRIGHT_MAGENTA CTERM_COLOR256(13)
+#define CTERM_BRIGHT_CYAN    CTERM_COLOR256(14)
+#define CTERM_BRIGHT_WHITE   CTERM_COLOR256(15)
+
+/* Text attributes. Combine them with |. */
+enum {
+    CTERM_BOLD      = 1 << 0,
+    CTERM_DIM       = 1 << 1,
+    CTERM_ITALIC    = 1 << 2,
+    CTERM_UNDERLINE = 1 << 3,
+    CTERM_BLINK     = 1 << 4,
+    CTERM_REVERSE   = 1 << 5, /* swap foreground and background */
+    CTERM_STRIKE    = 1 << 6
+};
+
+typedef struct cterm_style {
+    cterm_color fg, bg;
+    uint32_t attrs;
+} cterm_style;
+
+/* For example: cterm_style_make(CTERM_RED, CTERM_DEFAULT, CTERM_BOLD) */
+CTERM_API cterm_style cterm_style_make(cterm_color fg, cterm_color bg, uint32_t attrs);
+
+/* The terminal's normal text style. */
+CTERM_API cterm_style cterm_plain(void);
+
+/* --- Rectangles ---------------------------------------------------------- */
+
+typedef struct cterm_rect {
+    int x, y; /* top-left cell; (0, 0) is the top-left of the buffer */
+    int w, h; /* size in cells */
+} cterm_rect;
+
+CTERM_API cterm_rect cterm_rect_make(int x, int y, int w, int h);
+
+/* The area two rectangles share. Its size is 0 if they don't overlap. */
+CTERM_API cterm_rect cterm_rect_intersect(cterm_rect a, cterm_rect b);
+
+/* 1 if the cell (x, y) is inside the rectangle, otherwise 0. */
+CTERM_API int cterm_rect_contains(cterm_rect r, int x, int y);
+
+/* The rectangle shrunk by `n` cells on every side. */
+CTERM_API cterm_rect cterm_rect_inset(cterm_rect r, int n);
+
+/* --- Cell buffers -------------------------------------------------------- */
+
+/* How many combining marks fit on one character. Marks past this are dropped.
+ * If you change it, define it the same way in every file. */
+#ifndef CTERM_MAX_MARKS
+  #define CTERM_MAX_MARKS 3
+#endif
+
+/* One terminal cell. `ch` is 0 in the right half of a wide character. */
+typedef struct cterm_cell {
+    uint32_t ch;
+    uint32_t marks[CTERM_MAX_MARKS]; /* combining marks on ch; 0 means unused */
+    cterm_style style;
+} cterm_cell;
+
+/* A grid of cells to draw on. The screen is a buffer (see cterm_screen), and you
+ * can create your own to test drawing code without a terminal. */
+typedef struct cterm_buffer {
+    int width, height;
+    cterm_cell *cells;   /* width * height cells, row by row */
+    cterm_rect clip;     /* drawing outside this area is ignored */
+    int cursor_visible;  /* see cterm_show_cursor */
+    int cursor_x, cursor_y;
+} cterm_buffer;
+
+/* Creates a blank buffer. Returns NULL if out of memory. */
+CTERM_API cterm_buffer *cterm_buffer_new(int width, int height);
+CTERM_API void cterm_buffer_free(cterm_buffer *buffer);
+
+/* Changes the size and blanks the contents. Returns 0, or -1 if out of memory,
+ * in which case the buffer keeps its old size and contents. */
+CTERM_API int cterm_buffer_resize(cterm_buffer *buffer, int width, int height);
+
+/* Copies row `y` into `out` as UTF-8 and always NUL-terminates it. Returns the
+ * length, or -1 if `y` is out of range. Handy for checking drawing in tests. */
+CTERM_API int cterm_buffer_line(const cterm_buffer *buffer, int y, char *out, int cap);
+
+/* --- Drawing ------------------------------------------------------------- */
+
+/* The buffer's whole area. */
+CTERM_API cterm_rect cterm_bounds(const cterm_buffer *buffer);
+
+/* Blanks the buffer, removes the clip area and hides the cursor. Most apps call
+ * this at the start of each frame and then draw everything again. */
+CTERM_API void cterm_clear(cterm_buffer *buffer);
+
+/* Draws one character. Combining marks attach to the character on the left.
+ * Control characters are drawn as U+FFFD, so untrusted text can't sneak escape
+ * sequences to the terminal. */
+CTERM_API void cterm_put(cterm_buffer *buffer, int x, int y, uint32_t codepoint, cterm_style style);
+
+/* Draws UTF-8 text on one line, and returns the x position just after it, so
+ * calls can be chained. There's no wrapping: anything too long gets clipped. */
+CTERM_API int cterm_text(cterm_buffer *buffer, int x, int y, cterm_style style, const char *utf8);
+
+/* The same, for text that's `length` bytes long and may not be NUL-terminated. */
+CTERM_API int cterm_textn(cterm_buffer *buffer, int x, int y, cterm_style style, const char *utf8, size_t length);
+
+/* Fills a rectangle with one character. */
+CTERM_API void cterm_fill(cterm_buffer *buffer, cterm_rect area, uint32_t codepoint, cterm_style style);
+
+/* Limits drawing to `area` (it can't grow past the buffer). Returns the previous
+ * clip area, so you can put it back when you're done:
+ *     cterm_rect old = cterm_set_clip(s, panel);
+ *     ...draw...
+ *     cterm_set_clip(s, old);                                                 */
+CTERM_API cterm_rect cterm_set_clip(cterm_buffer *buffer, cterm_rect area);
+
+/* Shows the terminal's cursor at (x, y) once this buffer is presented. */
+CTERM_API void cterm_show_cursor(cterm_buffer *buffer, int x, int y);
+CTERM_API void cterm_hide_cursor(cterm_buffer *buffer);
+
+/* --- Screen -------------------------------------------------------------- */
+
+/* The buffer you draw on to change the screen. It's NULL before cterm_init().
+ * The pointer stays valid until cterm_shutdown(), even across resizes. */
+CTERM_API cterm_buffer *cterm_screen(void);
+
+/* Sends what you've drawn to the terminal, writing only the cells that changed.
+ * Returns 0, or -1 if the write failed. */
+CTERM_API int cterm_present(void);
+
+/* Makes the next cterm_present() repaint everything. Useful if something else
+ * has scribbled on the screen. Apps often bind this to Ctrl+L. */
+CTERM_API void cterm_redraw(void);
+
 #ifdef __cplusplus
 }
 #endif
@@ -124,6 +279,9 @@ CTERM_API int cterm_text_width(const char *utf8);
 #ifndef CTERM_IMPLEMENTATION_DONE
 #define CTERM_IMPLEMENTATION_DONE
 
+#include <stdlib.h>
+#include <string.h>
+
 #if defined(_WIN32)
   #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN   /* skip rarely used parts of windows.h */
@@ -134,8 +292,18 @@ CTERM_API int cterm_text_width(const char *utf8);
   #include <windows.h>
 #else
   #include <errno.h>
+  #include <sys/ioctl.h>
   #include <termios.h>
   #include <unistd.h>
+#endif
+
+/* --- Memory --------------------------------------------------------------- */
+
+/* Define all three before the implementation to use your own allocator. */
+#ifndef CTERM_MALLOC
+  #define CTERM_MALLOC(size)        malloc(size)
+  #define CTERM_REALLOC(ptr, size)  realloc(ptr, size)
+  #define CTERM_FREE(ptr)           free(ptr)
 #endif
 
 /* --- Errors -------------------------------------------------------------- */
@@ -388,6 +556,519 @@ CTERM_API int cterm_text_width(const char *utf8) {
 }
 
 /* ========================================================================= *
+ * STYLES AND RECTANGLES
+ * ========================================================================= */
+
+CTERM_API cterm_style cterm_style_make(cterm_color fg, cterm_color bg, uint32_t attrs) {
+    cterm_style style;
+    style.fg = fg;
+    style.bg = bg;
+    style.attrs = attrs;
+    return style;
+}
+
+CTERM_API cterm_style cterm_plain(void) {
+    return cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, 0);
+}
+
+static int cterm__style_equal(cterm_style a, cterm_style b) {
+    return a.fg == b.fg && a.bg == b.bg && a.attrs == b.attrs;
+}
+
+CTERM_API cterm_rect cterm_rect_make(int x, int y, int w, int h) {
+    cterm_rect r;
+    r.x = x;
+    r.y = y;
+    r.w = w > 0 ? w : 0;
+    r.h = h > 0 ? h : 0;
+    return r;
+}
+
+CTERM_API cterm_rect cterm_rect_intersect(cterm_rect a, cterm_rect b) {
+    int left   = a.x > b.x ? a.x : b.x;
+    int top    = a.y > b.y ? a.y : b.y;
+    int right  = a.x + a.w < b.x + b.w ? a.x + a.w : b.x + b.w;
+    int bottom = a.y + a.h < b.y + b.h ? a.y + a.h : b.y + b.h;
+    return cterm_rect_make(left, top, right - left, bottom - top);
+}
+
+CTERM_API int cterm_rect_contains(cterm_rect r, int x, int y) {
+    return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+}
+
+CTERM_API cterm_rect cterm_rect_inset(cterm_rect r, int n) {
+    return cterm_rect_make(r.x + n, r.y + n, r.w - 2 * n, r.h - 2 * n);
+}
+
+/* ========================================================================= *
+ * CELL BUFFERS AND DRAWING
+ *
+ * The one rule everything here protects: a wide character always occupies two
+ * cells, a "lead" cell holding the character and a "continuation" cell to its
+ * right with ch == 0. There's never a lone half of a wide character. If you
+ * overwrite one half, the other half turns into a space, which is also what a
+ * real terminal does. The renderer relies on this.
+ * ========================================================================= */
+
+static cterm_cell cterm__blank_cell(void) {
+    cterm_cell cell;
+    memset(&cell, 0, sizeof cell);
+    cell.ch = ' ';
+    return cell;
+}
+
+/* Allocates the cell array for a size, without touching any buffer. */
+static cterm_cell *cterm__cells_new(int width, int height) {
+    cterm_cell blank = cterm__blank_cell();
+    cterm_cell *cells;
+    size_t count = (size_t)width * (size_t)height, i;
+    /* Allocating at least one cell means malloc(0) can't look like a failure. */
+    if (height != 0 && count / (size_t)height != (size_t)width) return NULL;
+    if (count > ((size_t)-1) / sizeof(cterm_cell) - 1) return NULL;
+    cells = (cterm_cell *)CTERM_MALLOC((count ? count : 1) * sizeof(cterm_cell));
+    if (!cells) return NULL;
+    for (i = 0; i < count; i++) cells[i] = blank;
+    return cells;
+}
+
+CTERM_API int cterm_buffer_resize(cterm_buffer *buffer, int width, int height) {
+    cterm_cell *cells;
+    if (width < 0) width = 0;
+    if (height < 0) height = 0;
+    cells = cterm__cells_new(width, height);
+    if (!cells) return cterm__fail("out of memory");
+    CTERM_FREE(buffer->cells);
+    buffer->cells = cells;
+    buffer->width = width;
+    buffer->height = height;
+    buffer->clip = cterm_rect_make(0, 0, width, height);
+    buffer->cursor_visible = 0;
+    buffer->cursor_x = 0;
+    buffer->cursor_y = 0;
+    return 0;
+}
+
+CTERM_API cterm_buffer *cterm_buffer_new(int width, int height) {
+    cterm_buffer *buffer = (cterm_buffer *)CTERM_MALLOC(sizeof(cterm_buffer));
+    if (!buffer) {
+        cterm__fail("out of memory");
+        return NULL;
+    }
+    memset(buffer, 0, sizeof *buffer);
+    if (cterm_buffer_resize(buffer, width, height) != 0) {
+        CTERM_FREE(buffer);
+        return NULL;
+    }
+    return buffer;
+}
+
+CTERM_API void cterm_buffer_free(cterm_buffer *buffer) {
+    if (!buffer) return;
+    CTERM_FREE(buffer->cells);
+    CTERM_FREE(buffer);
+}
+
+CTERM_API cterm_rect cterm_bounds(const cterm_buffer *buffer) {
+    return cterm_rect_make(0, 0, buffer->width, buffer->height);
+}
+
+CTERM_API cterm_rect cterm_set_clip(cterm_buffer *buffer, cterm_rect area) {
+    cterm_rect previous = buffer->clip;
+    buffer->clip = cterm_rect_intersect(area, cterm_bounds(buffer));
+    return previous;
+}
+
+CTERM_API void cterm_show_cursor(cterm_buffer *buffer, int x, int y) {
+    /* A cursor can't be shown outside the visible area, so hide it instead. */
+    if (!cterm_rect_contains(buffer->clip, x, y)) {
+        buffer->cursor_visible = 0;
+        return;
+    }
+    buffer->cursor_visible = 1;
+    buffer->cursor_x = x;
+    buffer->cursor_y = y;
+}
+
+CTERM_API void cterm_hide_cursor(cterm_buffer *buffer) {
+    buffer->cursor_visible = 0;
+}
+
+CTERM_API void cterm_clear(cterm_buffer *buffer) {
+    cterm_cell blank = cterm__blank_cell();
+    size_t count = (size_t)buffer->width * (size_t)buffer->height, i;
+    for (i = 0; i < count; i++) buffer->cells[i] = blank;
+    buffer->clip = cterm_bounds(buffer);
+    buffer->cursor_visible = 0;
+}
+
+static cterm_cell *cterm__cell_at(const cterm_buffer *buffer, int x, int y) {
+    return &buffer->cells[(size_t)y * (size_t)buffer->width + (size_t)x];
+}
+
+/* Turns a cell into a space, keeping its colours. */
+static void cterm__blank_keep_style(cterm_cell *cell) {
+    cterm_style style = cell->style;
+    *cell = cterm__blank_cell();
+    cell->style = style;
+}
+
+/* Called just before the cell at (x, y) is overwritten. If it's part of a wide
+ * character, the other half can't stay, so it's blanked. That can touch a cell
+ * outside the clip area, because keeping wide characters whole matters more. */
+static void cterm__split_wide(cterm_buffer *buffer, int x, int y) {
+    if (cterm__cell_at(buffer, x, y)->ch == 0 && x > 0) {
+        cterm__blank_keep_style(cterm__cell_at(buffer, x - 1, y));
+    }
+    if (x + 1 < buffer->width && cterm__cell_at(buffer, x + 1, y)->ch == 0) {
+        cterm__blank_keep_style(cterm__cell_at(buffer, x + 1, y));
+    }
+}
+
+/* Writes a character whose cells are already known to be inside the clip area. */
+static void cterm__write_cell(cterm_buffer *buffer, int x, int y, uint32_t cp, int width, cterm_style style) {
+    cterm_cell *cell;
+
+    cterm__split_wide(buffer, x, y);
+    if (width == 2) cterm__split_wide(buffer, x + 1, y);
+
+    cell = cterm__cell_at(buffer, x, y);
+    memset(cell, 0, sizeof *cell);
+    cell->ch = cp;
+    cell->style = style;
+
+    if (width == 2) {
+        cell = cterm__cell_at(buffer, x + 1, y);
+        memset(cell, 0, sizeof *cell); /* ch == 0 marks the continuation cell */
+        cell->style = style;
+    }
+}
+
+/* Replaces anything that isn't safe or valid to send to a terminal. */
+static uint32_t cterm__sanitize(uint32_t cp) {
+    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return CTERM__REPLACEMENT; /* control codes */
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return CTERM__REPLACEMENT;
+    return cp;
+}
+
+/* Adds a combining mark to the character at (x, y). */
+static void cterm__attach_mark(cterm_buffer *buffer, int x, int y, uint32_t mark) {
+    cterm_cell *cell;
+    int i;
+    if (!cterm_rect_contains(buffer->clip, x, y)) return;
+    cell = cterm__cell_at(buffer, x, y);
+    if (cell->ch == 0 && x > 0) cell = cterm__cell_at(buffer, x - 1, y); /* use the wide lead */
+    for (i = 0; i < CTERM_MAX_MARKS; i++) {
+        if (cell->marks[i] == 0) {
+            cell->marks[i] = mark;
+            return;
+        }
+    }
+}
+
+CTERM_API void cterm_put(cterm_buffer *buffer, int x, int y, uint32_t cp, cterm_style style) {
+    int width;
+    cp = cterm__sanitize(cp);
+    width = cterm_char_width(cp);
+
+    if (width == 0) {
+        cterm__attach_mark(buffer, x - 1, y, cp);
+    } else if (width == 1) {
+        if (cterm_rect_contains(buffer->clip, x, y)) cterm__write_cell(buffer, x, y, cp, 1, style);
+    } else {
+        int left  = cterm_rect_contains(buffer->clip, x, y);
+        int right = cterm_rect_contains(buffer->clip, x + 1, y);
+        if (left && right) {
+            cterm__write_cell(buffer, x, y, cp, 2, style);
+        } else if (left) {
+            cterm__write_cell(buffer, x, y, ' ', 1, style); /* half a character can't be drawn */
+        } else if (right) {
+            cterm__write_cell(buffer, x + 1, y, ' ', 1, style);
+        }
+    }
+}
+
+CTERM_API int cterm_textn(cterm_buffer *buffer, int x, int y, cterm_style style, const char *utf8, size_t length) {
+    const unsigned char *s = (const unsigned char *)utf8;
+    int have_base = 0; /* a mark needs a character from this string to attach to */
+
+    while (length > 0) {
+        uint32_t cp = CTERM__REPLACEMENT;
+        int used = cterm__utf8_decode(s, length, &cp);
+        int width;
+        if (used == 0) { /* string ended partway through a character */
+            cp = CTERM__REPLACEMENT;
+            used = 1;
+        }
+        s += used;
+        length -= (size_t)used;
+
+        cp = cterm__sanitize(cp);
+        width = cterm_char_width(cp);
+        if (width == 0 && !have_base) continue;
+        cterm_put(buffer, x, y, cp, style);
+        x += width;
+        have_base = 1;
+    }
+    return x;
+}
+
+CTERM_API int cterm_text(cterm_buffer *buffer, int x, int y, cterm_style style, const char *utf8) {
+    return cterm_textn(buffer, x, y, style, utf8, strlen(utf8));
+}
+
+CTERM_API void cterm_fill(cterm_buffer *buffer, cterm_rect area, uint32_t cp, cterm_style style) {
+    int x, y, step;
+    area = cterm_rect_intersect(area, buffer->clip);
+    step = cterm_char_width(cterm__sanitize(cp));
+    if (step == 0) return; /* a mark alone can't fill anything */
+    for (y = area.y; y < area.y + area.h; y++) {
+        for (x = area.x; x < area.x + area.w; x += step) {
+            cterm_put(buffer, x, y, cp, style);
+        }
+    }
+}
+
+CTERM_API int cterm_buffer_line(const cterm_buffer *buffer, int y, char *out, int cap) {
+    int x, m, len = 0;
+    if (y < 0 || y >= buffer->height || cap <= 0) return -1;
+    for (x = 0; x < buffer->width; x++) {
+        const cterm_cell *cell = cterm__cell_at(buffer, x, y);
+        char bytes[4];
+        int n;
+        if (cell->ch == 0) continue;
+        n = cterm__utf8_encode(cell->ch, bytes);
+        if (len + n >= cap) break;
+        memcpy(out + len, bytes, (size_t)n);
+        len += n;
+        for (m = 0; m < CTERM_MAX_MARKS && cell->marks[m]; m++) {
+            n = cterm__utf8_encode(cell->marks[m], bytes);
+            if (len + n >= cap) break;
+            memcpy(out + len, bytes, (size_t)n);
+            len += n;
+        }
+    }
+    out[len] = '\0';
+    return len;
+}
+
+/* ========================================================================= *
+ * RENDERER
+ *
+ * Turns "what the screen should look like" into terminal escape sequences.
+ *
+ * Two buffers are kept: `back` is what the app has drawn, and `front` is what's
+ * on the terminal now. Comparing them gives the smallest update, which avoids
+ * flicker and keeps things fast over SSH.
+ *
+ * Nothing here touches a terminal: it only appends bytes to a string. That means
+ * tests can check the output directly (see tests/test_render.c).
+ * ========================================================================= */
+
+/* A growable byte string. If memory runs out, `failed` is set and further
+ * appends are ignored, so callers can check once at the end. */
+typedef struct cterm__sb {
+    char *data;
+    size_t len, cap;
+    int failed;
+} cterm__sb;
+
+static void cterm__sb_append(cterm__sb *sb, const char *bytes, size_t n) {
+    if (sb->failed) return;
+    if (sb->len + n > sb->cap) {
+        size_t cap = sb->cap ? sb->cap : 4096;
+        char *data;
+        while (cap < sb->len + n) cap *= 2;
+        data = (char *)CTERM_REALLOC(sb->data, cap);
+        if (!data) {
+            sb->failed = 1;
+            return;
+        }
+        sb->data = data;
+        sb->cap = cap;
+    }
+    memcpy(sb->data + sb->len, bytes, n);
+    sb->len += n;
+}
+
+static void cterm__sb_str(cterm__sb *sb, const char *text) {
+    cterm__sb_append(sb, text, strlen(text));
+}
+
+static void cterm__sb_int(cterm__sb *sb, int value) {
+    char digits[12];
+    int i = (int)sizeof digits;
+    unsigned magnitude = value < 0 ? 0u : (unsigned)value;
+    do {
+        digits[--i] = (char)('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude > 0);
+    cterm__sb_append(sb, digits + i, sizeof digits - (size_t)i);
+}
+
+static void cterm__sb_free(cterm__sb *sb) {
+    CTERM_FREE(sb->data);
+    memset(sb, 0, sizeof *sb);
+}
+
+/* What the renderer believes about the real terminal. A cursor position of -1
+ * means "unknown", which forces the next move to be sent explicitly. */
+typedef struct cterm__render_state {
+    int cursor_x, cursor_y;
+    int cursor_visible;
+    int style_known;
+    cterm_style style;
+} cterm__render_state;
+
+static void cterm__render_state_reset(cterm__render_state *state) {
+    state->cursor_x = -1;
+    state->cursor_y = -1;
+    state->cursor_visible = 0;
+    state->style_known = 0;
+    state->style = cterm_plain();
+}
+
+/* Appends one colour to an SGR ("set style") sequence. */
+static void cterm__sgr_color(cterm__sb *out, cterm_color color, int background) {
+    uint32_t kind = color & 0xFF000000u;
+    if (color == CTERM_DEFAULT) return; /* the reset at the start of the sequence covers it */
+    if (kind == 0x01000000u) {
+        cterm__sb_str(out, background ? ";48;5;" : ";38;5;");
+        cterm__sb_int(out, (int)(color & 0xFFu));
+    } else {
+        cterm__sb_str(out, background ? ";48;2;" : ";38;2;");
+        cterm__sb_int(out, (int)((color >> 16) & 0xFFu));
+        cterm__sb_str(out, ";");
+        cterm__sb_int(out, (int)((color >> 8) & 0xFFu));
+        cterm__sb_str(out, ";");
+        cterm__sb_int(out, (int)(color & 0xFFu));
+    }
+}
+
+/* Sends a whole style. Every sequence starts with 0 (reset), so nothing can
+ * carry over from the previous style by accident. */
+static void cterm__sgr_style(cterm__sb *out, cterm_style style) {
+    cterm__sb_str(out, "\x1b[0");
+    if (style.attrs & CTERM_BOLD)      cterm__sb_str(out, ";1");
+    if (style.attrs & CTERM_DIM)       cterm__sb_str(out, ";2");
+    if (style.attrs & CTERM_ITALIC)    cterm__sb_str(out, ";3");
+    if (style.attrs & CTERM_UNDERLINE) cterm__sb_str(out, ";4");
+    if (style.attrs & CTERM_BLINK)     cterm__sb_str(out, ";5");
+    if (style.attrs & CTERM_REVERSE)   cterm__sb_str(out, ";7");
+    if (style.attrs & CTERM_STRIKE)    cterm__sb_str(out, ";9");
+    cterm__sgr_color(out, style.fg, 0);
+    cterm__sgr_color(out, style.bg, 1);
+    cterm__sb_str(out, "m");
+}
+
+/* Moves the terminal's cursor, unless it's already there. */
+static void cterm__render_move(cterm__sb *out, cterm__render_state *state, int x, int y) {
+    if (state->cursor_x == x && state->cursor_y == y) return;
+    cterm__sb_str(out, "\x1b[");
+    cterm__sb_int(out, y + 1); /* terminals count from 1 */
+    cterm__sb_str(out, ";");
+    cterm__sb_int(out, x + 1);
+    cterm__sb_str(out, "H");
+    state->cursor_x = x;
+    state->cursor_y = y;
+}
+
+static int cterm__cell_equal(const cterm_cell *a, const cterm_cell *b) {
+    int i;
+    if (a->ch != b->ch || !cterm__style_equal(a->style, b->style)) return 0;
+    for (i = 0; i < CTERM_MAX_MARKS; i++) {
+        if (a->marks[i] != b->marks[i]) return 0;
+    }
+    return 1;
+}
+
+/* Appends what's needed to make the terminal match `back`, and updates `front`
+ * to match as well. `front` and `back` must be the same size.
+ *
+ * With `full` set, the screen is cleared first and everything is repainted,
+ * which recovers from a resize or from anything else writing to the screen. */
+static void cterm__render(cterm__sb *out, cterm_buffer *front, const cterm_buffer *back,
+                          cterm__render_state *state, int full) {
+    int x, y, painting = 0;
+
+    if (full) {
+        /* After this the screen is known to be blank, so the normal comparison
+         * below only has to paint cells that aren't blank. */
+        cterm__sb_str(out, "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J");
+        cterm__render_state_reset(state);
+        state->style_known = 1;
+        cterm_clear(front);
+        painting = 1;
+    }
+
+    for (y = 0; y < back->height; y++) {
+        for (x = 0; x < back->width; x++) {
+            const cterm_cell *want = cterm__cell_at(back, x, y);
+            cterm_cell *have = cterm__cell_at(front, x, y);
+            int m;
+
+            if (cterm__cell_equal(want, have)) continue;
+            *have = *want;
+
+            /* The right half of a wide character was drawn with its left half. */
+            if (want->ch == 0) continue;
+
+            if (!painting) {
+                /* Synchronized output (mode 2026) asks the terminal to show this
+                 * whole update at once. Terminals without it ignore the request.
+                 * The cursor is hidden so it doesn't visibly jump around. */
+                cterm__sb_str(out, "\x1b[?2026h");
+                if (state->cursor_visible) cterm__sb_str(out, "\x1b[?25l");
+                state->cursor_visible = 0;
+                painting = 1;
+            }
+
+            cterm__render_move(out, state, x, y);
+
+            if (!state->style_known || !cterm__style_equal(state->style, want->style)) {
+                cterm__sgr_style(out, want->style);
+                state->style = want->style;
+                state->style_known = 1;
+            }
+
+            {
+                char bytes[4];
+                int n = cterm__utf8_encode(want->ch, bytes);
+                int width = cterm_char_width(want->ch);
+                cterm__sb_append(out, bytes, (size_t)n);
+                for (m = 0; m < CTERM_MAX_MARKS && want->marks[m]; m++) {
+                    n = cterm__utf8_encode(want->marks[m], bytes);
+                    cterm__sb_append(out, bytes, (size_t)n);
+                }
+
+                /* Terminals don't all agree on the width of wide characters, emoji
+                 * and marked text. Forgetting the position forces an explicit move
+                 * next, so a disagreement can't push the rest of the row sideways. */
+                if (width == 2 || want->ch >= 0x1F000 || want->marks[0]) {
+                    state->cursor_x = -1;
+                    state->cursor_y = -1;
+                } else {
+                    state->cursor_x = x + 1;
+                }
+            }
+        }
+    }
+
+    /* Put the cursor where the app wants it. */
+    if (back->cursor_visible) {
+        if (!state->cursor_visible || state->cursor_x != back->cursor_x || state->cursor_y != back->cursor_y) {
+            cterm__render_move(out, state, back->cursor_x, back->cursor_y);
+            if (!state->cursor_visible) cterm__sb_str(out, "\x1b[?25h");
+            state->cursor_visible = 1;
+        }
+    } else if (state->cursor_visible) {
+        cterm__sb_str(out, "\x1b[?25l");
+        state->cursor_visible = 0;
+    }
+
+    if (painting) cterm__sb_str(out, "\x1b[?2026l");
+}
+
+/* ========================================================================= *
  * PLATFORM LAYER
  *
  * Everything that differs between operating systems lives here, behind these
@@ -397,6 +1078,8 @@ CTERM_API int cterm_text_width(const char *utf8) {
  *   cterm__plat_shutdown   undo cterm__plat_init
  *   cterm__plat_read       read available input as UTF-8/VT bytes without
  *                          waiting; >0 bytes, 0 none, -1 terminal gone
+ *   cterm__plat_write      write all the bytes; 0 on success, -1 on failure
+ *   cterm__plat_size       get the terminal's size in cells
  * ========================================================================= */
 #if defined(_WIN32)
 
@@ -498,6 +1181,28 @@ static int cterm__plat_read(unsigned char *buf, int cap) {
     return len;
 }
 
+static int cterm__plat_write(const char *data, size_t n) {
+    while (n > 0) {
+        DWORD written = 0;
+        DWORD chunk = n > 0x10000 ? 0x10000 : (DWORD)n;
+        if (!WriteFile(cterm__hout, data, chunk, &written, NULL)) return -1;
+        data += written;
+        n -= written;
+    }
+    return 0;
+}
+
+static void cterm__plat_size(int *width, int *height) {
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    *width = 80;
+    *height = 24;
+    if (GetConsoleScreenBufferInfo(cterm__hout, &info)) {
+        /* srWindow is the visible part, which is smaller than the scrollback. */
+        *width  = info.srWindow.Right - info.srWindow.Left + 1;
+        *height = info.srWindow.Bottom - info.srWindow.Top + 1;
+    }
+}
+
 #else
 
 /* ------------------------------- POSIX ----------------------------------- */
@@ -558,30 +1263,125 @@ static int cterm__plat_read(unsigned char *buf, int cap) {
     return (int)n;
 }
 
+static int cterm__plat_write(const char *data, size_t n) {
+    while (n > 0) {
+        ssize_t written = write(STDOUT_FILENO, data, n);
+        if (written < 0) {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            return -1;
+        }
+        data += written;
+        n -= (size_t)written;
+    }
+    return 0;
+}
+
+static void cterm__plat_size(int *width, int *height) {
+    struct winsize size;
+    *width = 80;
+    *height = 24;
+    /* Some environments report 0x0, so only trust a real answer. */
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 && size.ws_row > 0) {
+        *width = size.ws_col;
+        *height = size.ws_row;
+    }
+}
+
 #endif /* platform */
 
 /* ========================================================================= *
  * LIFECYCLE
  * ========================================================================= */
 
-static int cterm__active = 0;
+/* Entering: alternate screen (so the user's shell history comes back when we
+ * finish), no auto-wrap (so drawing the bottom-right cell can't scroll the
+ * screen), hidden cursor, and bracketed paste. */
+#define CTERM__ENTER_SEQUENCE "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?2004h"
+
+/* Leaving undoes everything, including modes that may not be on, because turning
+ * off something that's already off is harmless. */
+#define CTERM__LEAVE_SEQUENCE \
+    "\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"
+
+/* All the state of the one terminal a process has. */
+static struct {
+    int active;
+    cterm_buffer back, front;
+    cterm__sb out;
+    cterm__render_state render;
+    int repaint; /* the next present must repaint everything */
+} cterm__term;
+
+/* Resizes both buffers to match the terminal. Returns 0 or -1. */
+static int cterm__update_size(void) {
+    int width, height;
+    cterm__plat_size(&width, &height);
+    if (width == cterm__term.back.width && height == cterm__term.back.height) return 0;
+    if (cterm_buffer_resize(&cterm__term.back, width, height) != 0) return -1;
+    if (cterm_buffer_resize(&cterm__term.front, width, height) != 0) return -1;
+    cterm__term.repaint = 1;
+    return 0;
+}
 
 CTERM_API int cterm_init(void) {
     /* Calling init twice must not save raw settings as the "normal" ones. */
-    if (cterm__active) return 0;
+    if (cterm__term.active) return 0;
     if (cterm__plat_init() != 0) return -1;
-    cterm__active = 1;
+
+    if (cterm__update_size() != 0) {
+        cterm__plat_shutdown();
+        return -1;
+    }
+    cterm__render_state_reset(&cterm__term.render);
+    cterm__term.repaint = 1;
+    cterm__term.active = 1;
+    cterm__plat_write(CTERM__ENTER_SEQUENCE, strlen(CTERM__ENTER_SEQUENCE));
     return 0;
 }
 
 CTERM_API void cterm_shutdown(void) {
-    if (!cterm__active) return;
+    if (!cterm__term.active) return;
+    cterm__term.active = 0;
+    cterm__plat_write(CTERM__LEAVE_SEQUENCE, strlen(CTERM__LEAVE_SEQUENCE));
     cterm__plat_shutdown();
-    cterm__active = 0;
+
+    /* Free everything, so a later cterm_init() starts from a clean slate. */
+    CTERM_FREE(cterm__term.back.cells);
+    CTERM_FREE(cterm__term.front.cells);
+    cterm__sb_free(&cterm__term.out);
+    memset(&cterm__term, 0, sizeof cterm__term);
+}
+
+CTERM_API cterm_buffer *cterm_screen(void) {
+    return cterm__term.active ? &cterm__term.back : NULL;
+}
+
+CTERM_API void cterm_redraw(void) {
+    cterm__term.repaint = 1;
+}
+
+CTERM_API int cterm_present(void) {
+    if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
+
+    cterm__term.out.len = 0;
+    cterm__render(&cterm__term.out, &cterm__term.front, &cterm__term.back, &cterm__term.render, cterm__term.repaint);
+    cterm__term.repaint = 0;
+
+    if (cterm__term.out.failed) {
+        /* Part of the frame was lost, so repaint from scratch next time. */
+        cterm__term.out.failed = 0;
+        cterm__term.repaint = 1;
+        return cterm__fail("out of memory");
+    }
+    if (cterm__term.out.len == 0) return 0;
+    if (cterm__plat_write(cterm__term.out.data, cterm__term.out.len) != 0) {
+        return cterm__fail("could not write to the terminal");
+    }
+    return 0;
 }
 
 CTERM_API int cterm_read(unsigned char *buf, int cap) {
-    if (!cterm__active) return cterm__fail("cterm_init has not been called");
+    if (!cterm__term.active) return cterm__fail("cterm_init has not been called");
     return cterm__plat_read(buf, cap);
 }
 
