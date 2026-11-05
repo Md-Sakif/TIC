@@ -361,7 +361,7 @@ Nobody has yet looked at the output on a real Windows or macOS screen. The tests
 - **No full grapheme clusters.** Emoji joined with a zero-width joiner (such as family emoji) are treated as separate characters, and might look wider than the terminal draws them.
 - **Right-to-left text** isn't reordered.
 - **Widgets:** there's only text input, list and scrollable view so far. The wheel always scrolls the outermost scroll view.
-- **Windows:** mintty (Git Bash's default window) needs `winpty` in front of the command, because it isn't a real console. Mouse input relies on the console's escape sequence support.
+- **Windows:** mintty (the default window for Git Bash and MSYS2) needs `winpty` in front of the command, because it isn't a real console. Mouse input relies on the console's escape sequence support.
 
 ## Troubleshooting
 

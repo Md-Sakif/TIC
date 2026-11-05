@@ -53,7 +53,7 @@ It should take about an hour or two.
 
 ### Some words you'll need
 
-- **Terminal:** the window where you type commands. It's called Terminal on Linux and macOS. On Windows, use Windows Terminal, or the Developer Command Prompt described below.
+- **Terminal:** the window where you type commands. It's called Terminal on Linux and macOS. On Windows, the setup below tells you which window to use.
 - **Compiler:** a program that turns your code into a program you can run.
 - **Cell:** one character's space on the screen. A terminal screen is a grid of cells, like a spreadsheet where each cell holds one character.
 
@@ -66,7 +66,29 @@ Open your terminal and follow the instructions for your system.
 | Ubuntu or Debian Linux | Run `sudo apt install build-essential` |
 | Fedora Linux | Run `sudo dnf install gcc` |
 | macOS | Run `xcode-select --install` and click through the window that appears |
-| Windows | Install [Visual Studio Community](https://visualstudio.microsoft.com/vs/community/) and tick **Desktop development with C++** during setup. Then open **Developer Command Prompt for VS** from the Start menu, and use that as your terminal for this tutorial |
+| Windows | Choose either Visual Studio or MinGW, as described below |
+
+#### Windows: Visual Studio or MinGW?
+
+Either works, and the tutorial's code is the same for both. **Visual Studio** is the bigger download, and is the simplest to set up. **MinGW** is much smaller, and gives you the `gcc` compiler that's also common on Linux.
+
+**To use Visual Studio:**
+
+1. Install [Visual Studio Community](https://visualstudio.microsoft.com/vs/community/), and tick **Desktop development with C++** during setup.
+2. Open **Developer Command Prompt for VS** from the Start menu. Use that as your terminal for this tutorial.
+
+**To use MinGW:**
+
+1. Install [MSYS2](https://www.msys2.org), using its default folder, `C:\msys64`.
+2. Open **MSYS2 UCRT64** from the Start menu, and run this command to install the compiler:
+   ```sh
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+   ```
+3. Close that window. **Don't use it for this tutorial**, because cterm programs can't run in it: it isn't a real Windows console.
+4. Open **Command Prompt** from the Start menu. Use that as your terminal for this tutorial. Each time you open it, run this first, so it can find the compiler:
+   ```bat
+   set PATH=C:\msys64\ucrt64\bin;%PATH%
+   ```
 
 ### Get the files
 
@@ -91,7 +113,8 @@ You'll use this command after every step. Use the same one every time:
 | System | Command |
 |---|---|
 | Linux or macOS | `cc -std=c99 sysmon.c -o sysmon && ./sysmon` |
-| Windows | `cl /utf-8 sysmon.c && sysmon.exe` |
+| Windows with Visual Studio | `cl /utf-8 sysmon.c && sysmon.exe` |
+| Windows with MinGW | `gcc -std=c99 sysmon.c -o sysmon.exe && sysmon.exe` |
 
 ### If you get stuck
 
@@ -1086,13 +1109,13 @@ The [main README](../../README.md) describes everything cterm can do, and [`demo
 
 **`'cterm.h' file not found`:** the compiler can't find the file. Make sure `cterm.h` and `stats.h` are in the same folder as `sysmon.c`, and that your terminal is in that folder. `ls` (or `dir` on Windows) lists what's there.
 
-**`cc: command not found`, or `'cl' is not recognized`:** the compiler isn't installed, or on Windows you're not in the Developer Command Prompt. See [Install a compiler](#install-a-compiler).
+**`cc: command not found`, or `'cl' is not recognized`, or `'gcc' is not recognized`:** the compiler isn't installed, or Windows can't find it. With Visual Studio, make sure you're in the Developer Command Prompt. With MinGW, make sure you've run the `set PATH` command in this window. See [Install a compiler](#install-a-compiler).
 
 **`must come before every other #include`:** make sure `#define CTERM_IMPLEMENTATION` and `#include "cterm.h"` are the first two lines of code in your file.
 
 **`implicit declaration of function`, or `undeclared`:** you're probably using something that's written further down the file, or you've missed an `#include`. In C, things must be written above the code that uses them. Compare the order in your file with that step's complete program.
 
-**`Could not start: stdin and stdout must both be a terminal`:** you ran it with its input or output redirected, or from inside something that isn't a real terminal, such as some editors' Run buttons. Run it directly in a terminal. On Windows, Git Bash's default window has this problem too. Use Windows Terminal or the Developer Command Prompt instead.
+**`Could not start: stdin and stdout must both be a terminal`:** you ran it with its input or output redirected, or from inside something that isn't a real terminal, such as some editors' Run buttons. Run it directly in a terminal. On Windows, the MSYS2 and Git Bash windows have this problem too. Use Command Prompt or the Developer Command Prompt instead.
 
 **My terminal is behaving strangely after a crash:** cterm repairs it after almost every kind of crash, but if it's still odd, type `reset` and press Enter. You may not see what you're typing. If Enter doesn't work, press Ctrl+J instead.
 
