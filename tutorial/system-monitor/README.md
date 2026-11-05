@@ -200,7 +200,7 @@ The drawing code is about to grow a lot, so let's give it its own function. **Re
 ```c
 static void draw(void) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
     tic_clear(screen);
@@ -242,7 +242,7 @@ int main(void) {
 
 ### What's going on
 
-- **A style** is how text looks: its text colour, its background colour, and extras such as bold. `tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD)` means bold black text on cyan. `TIC_DEFAULT` means "whatever colour the terminal normally uses", and `0` means no extras.
+- **A style** is how text looks: its text colour, its background colour, and extras such as bold. `tic_style_make(TIC_BLACK, TIC_CYAN, 0)` means black text on cyan, with no extras. `TIC_DEFAULT` means "whatever colour the terminal normally uses". Extras go in the last place, such as `TIC_BOLD`, but leave bold off black text: many terminals show bold colours in a brighter shade, which turns black into grey.
 - **A rectangle**, made with `tic_rect_make(x, y, width, height)`, describes an area of the screen. `tic_fill` fills it with a character. Filling with spaces in a coloured style is how you make a coloured bar.
 - **`screen->width` and `screen->height`** give the size of the window. The bottom row is `height - 1`, because rows are counted from 0.
 
@@ -273,7 +273,7 @@ static void draw_panel(tic_buffer *screen, tic_rect area, const char *title) {
 ```c
 static void draw(void) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
     int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
@@ -726,7 +726,7 @@ static void draw_processes(tic_buffer *screen, tic_rect area) {
 ```c
 static void draw(const tic_event *event) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
     int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
@@ -1024,7 +1024,7 @@ If someone shrinks the window right down, the panels get squashed into nonsense.
 ```c
 static void draw(const tic_event *event) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
     char clock_text[16];
     time_t now = time(NULL);

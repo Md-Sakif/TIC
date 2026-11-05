@@ -185,7 +185,7 @@ static void draw_processes(tic_buffer *screen, tic_rect area) {
 
 static void draw(const tic_event *event) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
     char clock_text[16];
     time_t now = time(NULL);

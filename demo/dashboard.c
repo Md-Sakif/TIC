@@ -34,7 +34,7 @@ static void draw(void) {
 
     /* Header and footer, each a full-width bar. */
     tic_fill(s, tic_rect_make(0, 0, s->width, 1), ' ', tic_style_make(TIC_BLACK, TIC_CYAN, 0));
-    tic_text(s, 1, 0, tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD), "TIC dashboard");
+    tic_text(s, 1, 0, tic_style_make(TIC_BLACK, TIC_CYAN, 0), "TIC dashboard");
     tic_textf(s, 1, s->height - 1, tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0),
               "%dx%d, %s. Press any key to quit.", s->width, s->height, mode_names[tic_get_color_mode()]);
 

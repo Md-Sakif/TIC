@@ -9,7 +9,7 @@
 
 static void draw(void) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
     tic_clear(screen);

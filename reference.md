@@ -494,7 +494,7 @@ typedef uint32_t tic_color;
 
 | Value | Meaning |
 |---|---|
-| `TIC_BOLD` | Bold |
+| `TIC_BOLD` | Bold. Many terminals also show the [named colours](#named-colours) in their bright version when bold, so avoid it on `TIC_BLACK`, which can turn grey |
 | `TIC_DIM` | Faint |
 | `TIC_ITALIC` | Italic |
 | `TIC_UNDERLINE` | Underlined |

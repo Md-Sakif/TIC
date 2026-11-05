@@ -141,6 +141,8 @@ Use any colour on any terminal. TIC works out what the terminal supports, and co
 
 Attributes are `TIC_BOLD`, `TIC_DIM`, `TIC_ITALIC`, `TIC_UNDERLINE`, `TIC_BLINK`, `TIC_REVERSE` and `TIC_STRIKE`. Not every terminal shows all of them.
 
+**Avoid bold on `TIC_BLACK`.** Many terminals, including Windows Terminal by default, show the 16 named colours in their bright version when they're bold. Bright black is grey, so bold black text can look faded.
+
 ### Clipping
 
 To stop drawing from spilling out of an area, set a clip rectangle, then put the old one back:
@@ -357,7 +359,7 @@ The code targets Linux, macOS, the BSDs and Windows 10 or newer, on any terminal
 | macOS (clang) | All tests pass in CI, including in real pseudo-terminals. The test using real `bash` is skipped if the installed version is older than 4.4 |
 | BSDs | Not tested, and not in CI |
 
-The tutorial's system monitor has been run by hand on real Windows. Nobody has yet looked at the output on a real macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
+The tutorial's system monitor has been run by hand on real Windows (gcc, PowerShell, Windows Terminal), and its display looked right. Mouse input and resizing weren't confirmed in that run. Nobody has yet looked at the output on a real macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
 
 ## Limitations
 

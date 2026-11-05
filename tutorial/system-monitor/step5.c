@@ -62,7 +62,7 @@ static void draw_memory(tic_buffer *screen, tic_rect area) {
 
 static void draw(void) {
     tic_buffer *screen = tic_screen();
-    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, 0);
     tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
     int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
