@@ -85,14 +85,16 @@ Either works, and the tutorial's code is the same for both. **Visual Studio** is
    pacman -S --needed mingw-w64-ucrt-x86_64-gcc
    ```
 3. Close that window. **Don't use it for this tutorial**, because TIC programs can't run in it: it isn't a real Windows console.
-4. Open **Command Prompt** from the Start menu. Use that as your terminal for this tutorial. Each time you open it, run this first, so it can find the compiler:
-   ```bat
-   set PATH=C:\msys64\ucrt64\bin;%PATH%
-   ```
+4. Open **Command Prompt** or **PowerShell** from the Start menu. Use that as your terminal for this tutorial. Each time you open it, run one of these first, so it can find the compiler:
+
+   | Terminal | Command |
+   |---|---|
+   | Command Prompt | `set PATH=C:\msys64\ucrt64\bin;%PATH%` |
+   | PowerShell | `$env:Path = "C:\msys64\ucrt64\bin;" + $env:Path` |
 
 ### Get the files
 
-Make a folder for your project, and download the two files you need into it. These commands work on all three systems:
+Make a folder for your project, and download the two files you need into it. On Windows, type `curl.exe` instead of `curl`, because `curl` means something else in Windows PowerShell:
 
 ```sh
 mkdir sysmon
@@ -108,13 +110,20 @@ Create an empty file called `sysmon.c` in the same folder, using any text editor
 
 ### How to build and run your program
 
-You'll use this command after every step. Use the same one every time:
+You'll use these commands after every step. Use the same ones every time.
 
-| System | Command |
-|---|---|
-| Linux or macOS | `cc -std=c99 sysmon.c -o sysmon && ./sysmon` |
-| Windows with Visual Studio | `cl /utf-8 sysmon.c && sysmon.exe` |
-| Windows with MinGW | `gcc -std=c99 sysmon.c -o sysmon.exe && sysmon.exe` |
+**On Linux or macOS,** this builds the program and then runs it:
+
+```sh
+cc -std=c99 sysmon.c -o sysmon && ./sysmon
+```
+
+**On Windows,** run two commands, one after the other. If the first one shows errors, fix those before running the second, or you'll just run your previous version.
+
+| Compiler | First, build it | Then, run it |
+|---|---|---|
+| Visual Studio | `cl /utf-8 sysmon.c` | `.\sysmon.exe` |
+| MinGW | `gcc -std=c99 sysmon.c -o sysmon.exe` | `.\sysmon.exe` |
 
 ### If you get stuck
 
@@ -1109,13 +1118,19 @@ The [main README](../../README.md) describes everything TIC can do, and [`demo/w
 
 **`'tic.h' file not found`:** the compiler can't find the file. Make sure `tic.h` and `stats.h` are in the same folder as `sysmon.c`, and that your terminal is in that folder. `ls` (or `dir` on Windows) lists what's there.
 
-**`cc: command not found`, or `'cl' is not recognized`, or `'gcc' is not recognized`:** the compiler isn't installed, or Windows can't find it. With Visual Studio, make sure you're in the Developer Command Prompt. With MinGW, make sure you've run the `set PATH` command in this window. See [Install a compiler](#install-a-compiler).
+**`cc: command not found`, or `'cl' is not recognized`, or `'gcc' is not recognized`:** the compiler isn't installed, or Windows can't find it. With Visual Studio, make sure you're in the Developer Command Prompt. With MinGW, make sure you've run the command that sets the path in this window, and that it's the right one for your terminal. See [Install a compiler](#install-a-compiler).
+
+**`The token '&&' is not a valid statement separator`:** Windows PowerShell doesn't understand `&&`. Run the build and run commands separately, as shown in [How to build and run your program](#how-to-build-and-run-your-program).
+
+**`sysmon.exe` is not recognized, even though it's in the folder:** PowerShell only runs programs in the current folder if you put `.\` in front. Use `.\sysmon.exe`.
+
+**`curl` shows an error about `Invoke-WebRequest`:** in Windows PowerShell, `curl` is a different command. Type `curl.exe` instead.
 
 **`must come before every other #include`:** make sure `#define TIC_IMPLEMENTATION` and `#include "tic.h"` are the first two lines of code in your file.
 
 **`implicit declaration of function`, or `undeclared`:** you're probably using something that's written further down the file, or you've missed an `#include`. In C, things must be written above the code that uses them. Compare the order in your file with that step's complete program.
 
-**`Could not start: stdin and stdout must both be a terminal`:** you ran it with its input or output redirected, or from inside something that isn't a real terminal, such as some editors' Run buttons. Run it directly in a terminal. On Windows, the MSYS2 and Git Bash windows have this problem too. Use Command Prompt or the Developer Command Prompt instead.
+**`Could not start: stdin and stdout must both be a terminal`:** you ran it with its input or output redirected, or from inside something that isn't a real terminal, such as some editors' Run buttons. Run it directly in a terminal. On Windows, the MSYS2 and Git Bash windows have this problem too. Use Command Prompt, PowerShell, or the Developer Command Prompt instead.
 
 **My terminal is behaving strangely after a crash:** TIC repairs it after almost every kind of crash, but if it's still odd, type `reset` and press Enter. You may not see what you're typing. If Enter doesn't work, press Ctrl+J instead.
 

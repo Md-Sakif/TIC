@@ -62,9 +62,11 @@ Then build and run it:
 
 | Compiler | Command |
 |---|---|
-| gcc or clang | `cc -std=c99 hello.c -o hello && ./hello` |
-| MSVC | `cl /utf-8 hello.c && hello.exe` |
-| MinGW | `gcc hello.c -o hello.exe && hello.exe` |
+| gcc or clang (Linux, macOS) | `cc -std=c99 hello.c -o hello && ./hello` |
+| MSVC (Windows) | `cl /utf-8 hello.c`, then `.\hello.exe` |
+| MinGW (Windows) | `gcc hello.c -o hello.exe`, then `.\hello.exe` |
+
+On Windows, run those as two separate commands, because Windows PowerShell doesn't understand `&&`. They work the same in Command Prompt and PowerShell.
 
 To see more, run `make` and try `build/keys`, `build/dashboard` and `build/widgets`.
 
@@ -355,7 +357,7 @@ The code targets Linux, macOS, the BSDs and Windows 10 or newer, on any terminal
 | macOS (clang) | All tests pass in CI, including in real pseudo-terminals. The test using real `bash` is skipped if the installed version is older than 4.4 |
 | BSDs | Not tested, and not in CI |
 
-Nobody has yet looked at the output on a real Windows or macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
+The tutorial's system monitor has been run by hand on real Windows. Nobody has yet looked at the output on a real macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
 
 ## Limitations
 
