@@ -5,6 +5,7 @@
 #   make test-all       the above with gcc, clang and C++, sanitizers, and link modes
 #   make test-link      check every documented way of including the header
 #   make check-readme   compile the examples in README.md
+#   make check-reference check the API reference matches tic.h
 #   make tutorial       build the tutorial's step programs
 #   make check-tutorial check the tutorial's text matches its code
 #   make e2e            run the tests that use a real pseudo-terminal (POSIX only)
@@ -31,7 +32,7 @@ TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui test_
 DEMOS = hello keys dashboard widgets
 TUTORIAL = step1 step2 step3 step4 step5 step6 step7 step8 step9
 
-.PHONY: all demos tutorial check-tutorial test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
+.PHONY: all demos tutorial check-tutorial check-reference test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
 
 all: demos
 
@@ -136,6 +137,9 @@ e2e-windows: windows
 
 check-readme:
 	$(PYTHON) tests/check_readme.py $(CC)
+
+check-reference:
+	$(PYTHON) tests/check_reference.py $(CC)
 
 check-tutorial:
 	$(PYTHON) tests/check_tutorial.py

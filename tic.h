@@ -8,8 +8,8 @@
  *     #include "tic.h"
  *
  * Every other file just does #include "tic.h". There's nothing else to build or
- * link. README.md is the full guide, and every function is documented where it's
- * declared in the PUBLIC API section below.
+ * link. README.md is the full guide, and reference.md documents the whole API. Each
+ * function is also described where it's declared in the PUBLIC API section below.
  *
  * OPTIONS
  *
