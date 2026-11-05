@@ -5,10 +5,10 @@
  * the tutorial: the three functions below are all you need. The last section of the
  * tutorial explains how the Linux version works, if you're curious.
  *
- * Include this AFTER cterm.h, so that cterm can set up your system's headers first:
+ * Include this AFTER tic.h, so that TIC can set up your system's headers first:
  *
- *     #define CTERM_IMPLEMENTATION
- *     #include "cterm.h"
+ *     #define TIC_IMPLEMENTATION
+ *     #include "tic.h"
  *     #include "stats.h"
  */
 #ifndef STATS_H

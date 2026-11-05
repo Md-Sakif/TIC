@@ -13,8 +13,8 @@
  * It aborts the test on any escape sequence it doesn't know, so the renderer
  * can't start sending something new without a test noticing.
  */
-#ifndef CTERM_TEST_VT_H
-#define CTERM_TEST_VT_H
+#ifndef TIC_TEST_VT_H
+#define TIC_TEST_VT_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,22 +22,22 @@
 
 typedef struct vt {
     int width, height;
-    cterm_cell *cells;
+    tic_cell *cells;
     int x, y;
-    cterm_style style;
+    tic_style style;
     int cursor_visible;
     int sync_depth_errors; /* a synchronized update was started twice or never ended */
     int in_sync;
 } vt;
 
-static cterm_cell *vt_at(vt *t, int x, int y) {
+static tic_cell *vt_at(vt *t, int x, int y) {
     return &t->cells[y * t->width + x];
 }
 
 static void vt_erase(vt *t) {
     int i;
     for (i = 0; i < t->width * t->height; i++) {
-        memset(&t->cells[i], 0, sizeof(cterm_cell));
+        memset(&t->cells[i], 0, sizeof(tic_cell));
         t->cells[i].ch = ' ';
     }
 }
@@ -46,8 +46,8 @@ static void vt_init(vt *t, int width, int height) {
     memset(t, 0, sizeof *t);
     t->width = width;
     t->height = height;
-    t->cells = (cterm_cell *)malloc(sizeof(cterm_cell) * (size_t)(width * height + 1));
-    t->style = cterm_plain();
+    t->cells = (tic_cell *)malloc(sizeof(tic_cell) * (size_t)(width * height + 1));
+    t->style = tic_plain();
     vt_erase(t);
 }
 
@@ -56,13 +56,13 @@ static void vt_free(vt *t) {
 }
 
 /* Reads one SGR colour starting at params[i]. Returns how many params it used. */
-static int vt_color(const int *params, int i, int count, cterm_color *out) {
+static int vt_color(const int *params, int i, int count, tic_color *out) {
     if (i + 2 < count && params[i + 1] == 5) {
-        *out = CTERM_COLOR256(params[i + 2]);
+        *out = TIC_COLOR256(params[i + 2]);
         return 3;
     }
     if (i + 4 < count && params[i + 1] == 2) {
-        *out = CTERM_RGB(params[i + 2], params[i + 3], params[i + 4]);
+        *out = TIC_RGB(params[i + 2], params[i + 3], params[i + 4]);
         return 5;
     }
     printf("vt: malformed colour sequence\n");
@@ -73,18 +73,18 @@ static void vt_sgr(vt *t, const int *params, int count) {
     int i = 0;
     while (i < count) {
         int p = params[i];
-        if (p == 0) t->style = cterm_plain();
-        else if (p == 1) t->style.attrs |= CTERM_BOLD;
-        else if (p == 2) t->style.attrs |= CTERM_DIM;
-        else if (p == 3) t->style.attrs |= CTERM_ITALIC;
-        else if (p == 4) t->style.attrs |= CTERM_UNDERLINE;
-        else if (p == 5) t->style.attrs |= CTERM_BLINK;
-        else if (p == 7) t->style.attrs |= CTERM_REVERSE;
-        else if (p == 9) t->style.attrs |= CTERM_STRIKE;
-        else if (p >= 30 && p <= 37) t->style.fg = CTERM_COLOR256(p - 30);
-        else if (p >= 40 && p <= 47) t->style.bg = CTERM_COLOR256(p - 40);
-        else if (p >= 90 && p <= 97) t->style.fg = CTERM_COLOR256(p - 90 + 8);
-        else if (p >= 100 && p <= 107) t->style.bg = CTERM_COLOR256(p - 100 + 8);
+        if (p == 0) t->style = tic_plain();
+        else if (p == 1) t->style.attrs |= TIC_BOLD;
+        else if (p == 2) t->style.attrs |= TIC_DIM;
+        else if (p == 3) t->style.attrs |= TIC_ITALIC;
+        else if (p == 4) t->style.attrs |= TIC_UNDERLINE;
+        else if (p == 5) t->style.attrs |= TIC_BLINK;
+        else if (p == 7) t->style.attrs |= TIC_REVERSE;
+        else if (p == 9) t->style.attrs |= TIC_STRIKE;
+        else if (p >= 30 && p <= 37) t->style.fg = TIC_COLOR256(p - 30);
+        else if (p >= 40 && p <= 47) t->style.bg = TIC_COLOR256(p - 40);
+        else if (p >= 90 && p <= 97) t->style.fg = TIC_COLOR256(p - 90 + 8);
+        else if (p >= 100 && p <= 107) t->style.bg = TIC_COLOR256(p - 100 + 8);
         else if (p == 38) { i += vt_color(params, i, count, &t->style.fg); continue; }
         else if (p == 48) { i += vt_color(params, i, count, &t->style.bg); continue; }
         else {
@@ -98,29 +98,29 @@ static void vt_sgr(vt *t, const int *params, int count) {
 /* Blanks the other half of any wide character that (x, y) belongs to. */
 static void vt_split(vt *t, int x, int y) {
     if (vt_at(t, x, y)->ch == 0 && x > 0) {
-        cterm_style keep = vt_at(t, x - 1, y)->style;
-        memset(vt_at(t, x - 1, y), 0, sizeof(cterm_cell));
+        tic_style keep = vt_at(t, x - 1, y)->style;
+        memset(vt_at(t, x - 1, y), 0, sizeof(tic_cell));
         vt_at(t, x - 1, y)->ch = ' ';
         vt_at(t, x - 1, y)->style = keep;
     }
     if (x + 1 < t->width && vt_at(t, x + 1, y)->ch == 0) {
-        cterm_style keep = vt_at(t, x + 1, y)->style;
-        memset(vt_at(t, x + 1, y), 0, sizeof(cterm_cell));
+        tic_style keep = vt_at(t, x + 1, y)->style;
+        memset(vt_at(t, x + 1, y), 0, sizeof(tic_cell));
         vt_at(t, x + 1, y)->ch = ' ';
         vt_at(t, x + 1, y)->style = keep;
     }
 }
 
 static void vt_print(vt *t, uint32_t cp) {
-    int width = cterm_char_width(cp);
+    int width = tic_char_width(cp);
     if (width == 0) {
         /* A combining mark joins the character just printed. */
         int x = t->x - 1, i;
-        cterm_cell *cell;
+        tic_cell *cell;
         if (x < 0) return;
         cell = vt_at(t, x, t->y);
         if (cell->ch == 0 && x > 0) cell = vt_at(t, x - 1, t->y);
-        for (i = 0; i < CTERM_MAX_MARKS; i++) {
+        for (i = 0; i < TIC_MAX_MARKS; i++) {
             if (cell->marks[i] == 0) {
                 cell->marks[i] = cp;
                 break;
@@ -134,11 +134,11 @@ static void vt_print(vt *t, uint32_t cp) {
     }
     vt_split(t, t->x, t->y);
     if (width == 2) vt_split(t, t->x + 1, t->y);
-    memset(vt_at(t, t->x, t->y), 0, sizeof(cterm_cell));
+    memset(vt_at(t, t->x, t->y), 0, sizeof(tic_cell));
     vt_at(t, t->x, t->y)->ch = cp;
     vt_at(t, t->x, t->y)->style = t->style;
     if (width == 2) {
-        memset(vt_at(t, t->x + 1, t->y), 0, sizeof(cterm_cell));
+        memset(vt_at(t, t->x + 1, t->y), 0, sizeof(tic_cell));
         vt_at(t, t->x + 1, t->y)->style = t->style;
     }
     t->x += width;
@@ -192,12 +192,12 @@ static size_t vt_csi(vt *t, const char *s, size_t n) {
     } else if (final == 'J' && count == 1 && params[0] == 2) {
         int i2;
         for (i2 = 0; i2 < t->width * t->height; i2++) {
-            memset(&t->cells[i2], 0, sizeof(cterm_cell));
+            memset(&t->cells[i2], 0, sizeof(tic_cell));
             t->cells[i2].ch = ' ';
             t->cells[i2].style = t->style;
         }
     } else if (final == 'm') {
-        if (count == 0) t->style = cterm_plain();
+        if (count == 0) t->style = tic_plain();
         else vt_sgr(t, params, count);
     } else {
         printf("vt: unknown sequence ending in '%c'\n", final);
@@ -224,7 +224,7 @@ static void vt_feed(vt *t, const char *s, size_t n) {
             abort();
         } else {
             uint32_t cp = 0;
-            int used = cterm__utf8_decode((const unsigned char *)s + i, n - i, &cp);
+            int used = tic__utf8_decode((const unsigned char *)s + i, n - i, &cp);
             if (used <= 0) {
                 printf("vt: truncated UTF-8\n");
                 abort();
@@ -236,15 +236,15 @@ static void vt_feed(vt *t, const char *s, size_t n) {
 }
 
 /* Returns the number of cells that differ from `b`, and prints the first one. */
-static int vt_compare(vt *t, const cterm_buffer *b) {
+static int vt_compare(vt *t, const tic_buffer *b) {
     int x, y, m, differences = 0;
     for (y = 0; y < b->height; y++) {
         for (x = 0; x < b->width; x++) {
-            const cterm_cell *want = &b->cells[y * b->width + x];
-            const cterm_cell *have = vt_at(t, x, y);
+            const tic_cell *want = &b->cells[y * b->width + x];
+            const tic_cell *have = vt_at(t, x, y);
             int same = want->ch == have->ch && want->style.fg == have->style.fg &&
                        want->style.bg == have->style.bg && want->style.attrs == have->style.attrs;
-            for (m = 0; m < CTERM_MAX_MARKS; m++) {
+            for (m = 0; m < TIC_MAX_MARKS; m++) {
                 if (want->marks[m] != have->marks[m]) same = 0;
             }
             if (!same) {
@@ -259,4 +259,4 @@ static int vt_compare(vt *t, const cterm_buffer *b) {
     return differences;
 }
 
-#endif /* CTERM_TEST_VT_H */
+#endif /* TIC_TEST_VT_H */

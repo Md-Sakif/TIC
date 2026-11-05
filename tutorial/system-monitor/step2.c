@@ -2,43 +2,43 @@
  *
  * Part of the system monitor tutorial: see README.md in this folder. */
 
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #include <stdio.h>
 
 static void draw(void) {
-    cterm_buffer *screen = cterm_screen();
-    cterm_style title_style = cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD);
-    cterm_style help_style = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
+    tic_buffer *screen = tic_screen();
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
-    cterm_clear(screen);
+    tic_clear(screen);
 
     /* A coloured bar across the top, with the title on it. */
-    cterm_fill(screen, cterm_rect_make(0, 0, screen->width, 1), ' ', title_style);
-    cterm_text(screen, 1, 0, title_style, "System Monitor");
+    tic_fill(screen, tic_rect_make(0, 0, screen->width, 1), ' ', title_style);
+    tic_text(screen, 1, 0, title_style, "System Monitor");
 
     /* A line of help along the bottom. */
-    cterm_text(screen, 1, screen->height - 1, help_style, "q: quit");
+    tic_text(screen, 1, screen->height - 1, help_style, "q: quit");
 
-    cterm_present();
+    tic_present();
 }
 
 int main(void) {
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
 
     for (;;) {
-        cterm_event event;
+        tic_event event;
 
         draw();
 
-        if (cterm_poll(&event, -1) < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (tic_poll(&event, -1) < 0) break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }

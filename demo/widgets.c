@@ -7,8 +7,8 @@
  *
  * Tab moves between widgets, and the mouse works too. Ctrl+Q quits, and Ctrl+Z
  * suspends on Linux and macOS. */
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,11 +25,11 @@ static const char *const all_items[] = {
 
 /* All the state is in one place. The widgets remember nothing except this. */
 static struct {
-    cterm_ui ui;
+    tic_ui ui;
     char search_text[64];
-    cterm_input search;
-    cterm_list list;
-    cterm_scroll details;
+    tic_input search;
+    tic_list list;
+    tic_scroll details;
     const char *matches[ITEM_COUNT];
     int match_count;
     char picked[64];
@@ -59,88 +59,88 @@ static void update_matches(void) {
     }
 }
 
-static void draw_details(cterm_buffer *s, cterm_rect area, const char *item) {
+static void draw_details(tic_buffer *s, tic_rect area, const char *item) {
     enum { LINES = 40 };
-    cterm_rect c = cterm_ui_scroll_begin(&app.ui, area, &app.details, 0, LINES);
+    tic_rect c = tic_ui_scroll_begin(&app.ui, area, &app.details, 0, LINES);
     int i;
-    cterm_textf(s, c.x, c.y, cterm_style_make(CTERM_BRIGHT_YELLOW, CTERM_DEFAULT, CTERM_BOLD), "%s", item ? item : "(nothing selected)");
+    tic_textf(s, c.x, c.y, tic_style_make(TIC_BRIGHT_YELLOW, TIC_DEFAULT, TIC_BOLD), "%s", item ? item : "(nothing selected)");
     for (i = 2; i < LINES; i++) {
-        cterm_textf(s, c.x, c.y + i, cterm_plain(), "Line %d of the details. Use the wheel, or Tab here and press the arrows.", i - 1);
+        tic_textf(s, c.x, c.y + i, tic_plain(), "Line %d of the details. Use the wheel, or Tab here and press the arrows.", i - 1);
     }
-    cterm_ui_scroll_end(&app.ui, &app.details);
+    tic_ui_scroll_end(&app.ui, &app.details);
 }
 
-static void draw_frame(const cterm_event *ev) {
-    cterm_buffer *s = cterm_screen();
-    cterm_style dim = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
-    cterm_style border = cterm_style_make(CTERM_BRIGHT_BLUE, CTERM_DEFAULT, 0);
+static void draw_frame(const tic_event *ev) {
+    tic_buffer *s = tic_screen();
+    tic_style dim = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
+    tic_style border = tic_style_make(TIC_BRIGHT_BLUE, TIC_DEFAULT, 0);
 
     /* Layout: a search row, the main area, and a status row. */
-    int row_sizes[] = { CTERM_FIXED(3), CTERM_FILL(1), CTERM_FIXED(1) };
-    int column_sizes[] = { CTERM_PERCENT(40), CTERM_FILL(1) };
-    cterm_rect rows[3], columns[2], search_inner;
-    cterm_split_rows(cterm_bounds(s), 0, row_sizes, 3, rows);
-    cterm_split_columns(rows[1], 0, column_sizes, 2, columns);
+    int row_sizes[] = { TIC_FIXED(3), TIC_FILL(1), TIC_FIXED(1) };
+    int column_sizes[] = { TIC_PERCENT(40), TIC_FILL(1) };
+    tic_rect rows[3], columns[2], search_inner;
+    tic_split_rows(tic_bounds(s), 0, row_sizes, 3, rows);
+    tic_split_columns(rows[1], 0, column_sizes, 2, columns);
 
-    cterm_clear(s);
-    cterm_ui_begin(&app.ui, s, ev);
+    tic_clear(s);
+    tic_ui_begin(&app.ui, s, ev);
 
     /* Search box. */
-    cterm_box(s, rows[0], CTERM_BORDER_ROUNDED, border);
-    cterm_text(s, rows[0].x + 2, rows[0].y, border, " Search ");
-    search_inner = cterm_rect_inset(rows[0], 1);
-    if (cterm_ui_input(&app.ui, search_inner, &app.search) & CTERM_UI_CHANGED) {
+    tic_box(s, rows[0], TIC_BORDER_ROUNDED, border);
+    tic_text(s, rows[0].x + 2, rows[0].y, border, " Search ");
+    search_inner = tic_rect_inset(rows[0], 1);
+    if (tic_ui_input(&app.ui, search_inner, &app.search) & TIC_UI_CHANGED) {
         update_matches();
     }
 
     /* List of matches. */
-    cterm_box(s, columns[0], CTERM_BORDER_ROUNDED, border);
-    cterm_textf(s, columns[0].x + 2, columns[0].y, border, " %d matches ", app.match_count);
-    if (cterm_ui_list(&app.ui, cterm_rect_inset(columns[0], 1), &app.list, app.matches, app.match_count) & CTERM_UI_SUBMITTED) {
+    tic_box(s, columns[0], TIC_BORDER_ROUNDED, border);
+    tic_textf(s, columns[0].x + 2, columns[0].y, border, " %d matches ", app.match_count);
+    if (tic_ui_list(&app.ui, tic_rect_inset(columns[0], 1), &app.list, app.matches, app.match_count) & TIC_UI_SUBMITTED) {
         snprintf(app.picked, sizeof app.picked, "%s", app.matches[app.list.selected]);
     }
 
     /* Details of the selected item. */
-    cterm_box(s, columns[1], CTERM_BORDER_ROUNDED, border);
-    cterm_text(s, columns[1].x + 2, columns[1].y, border, " Details ");
-    draw_details(s, cterm_rect_inset(columns[1], 1), app.match_count > 0 ? app.matches[app.list.selected] : NULL);
+    tic_box(s, columns[1], TIC_BORDER_ROUNDED, border);
+    tic_text(s, columns[1].x + 2, columns[1].y, border, " Details ");
+    draw_details(s, tic_rect_inset(columns[1], 1), app.match_count > 0 ? app.matches[app.list.selected] : NULL);
 
     /* Status row. */
-    cterm_textf(s, 1, rows[2].y, dim, "Tab: next  Enter: pick  Ctrl+Z: suspend  Ctrl+Q: quit   Picked: %s",
-                app.picked[0] ? app.picked : "(none)");
+    tic_textf(s, 1, rows[2].y, dim, "Tab: next  Enter: pick  Ctrl+Z: suspend  Ctrl+Q: quit   Picked: %s",
+              app.picked[0] ? app.picked : "(none)");
 
-    cterm_ui_end(&app.ui);
-    cterm_present();
+    tic_ui_end(&app.ui);
+    tic_present();
 }
 
 int main(void) {
-    cterm_event ev;
+    tic_event ev;
 
-    if (cterm_init() != 0) {
-        fprintf(stderr, "cterm_init failed: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "tic_init failed: %s\n", tic_error());
         return 1;
     }
-    cterm_set_mouse(CTERM_MOUSE_BUTTONS);
+    tic_set_mouse(TIC_MOUSE_BUTTONS);
 
-    cterm_ui_init(&app.ui);
-    app.ui.theme.list_selected = cterm_style_make(CTERM_BLACK, CTERM_BRIGHT_CYAN, 0);
-    app.ui.theme.list_selected_idle = cterm_style_make(CTERM_BLACK, CTERM_WHITE, 0);
-    cterm_input_init(&app.search, app.search_text, sizeof app.search_text);
+    tic_ui_init(&app.ui);
+    app.ui.theme.list_selected = tic_style_make(TIC_BLACK, TIC_BRIGHT_CYAN, 0);
+    app.ui.theme.list_selected_idle = tic_style_make(TIC_BLACK, TIC_WHITE, 0);
+    tic_input_init(&app.search, app.search_text, sizeof app.search_text);
     app.search.placeholder = "type to filter";
     update_matches();
 
     memset(&ev, 0, sizeof ev);
     for (;;) {
         draw_frame(&ev);
-        if (cterm_poll(&ev, -1) < 0) break;
-        if (ev.type == CTERM_EVENT_KEY && (ev.mods & CTERM_MOD_CTRL)) {
+        if (tic_poll(&ev, -1) < 0) break;
+        if (ev.type == TIC_EVENT_KEY && (ev.mods & TIC_MOD_CTRL)) {
             if (ev.key == 'q') break;
-            if (ev.key == 'l') cterm_redraw();
-            if (ev.key == 'z') cterm_suspend(); /* does nothing on Windows */
+            if (ev.key == 'l') tic_redraw();
+            if (ev.key == 'z') tic_suspend(); /* does nothing on Windows */
         }
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     if (app.picked[0]) printf("You picked: %s\n", app.picked);
     return 0;
 }

@@ -1,4 +1,4 @@
-# Builds the tests and demos. cterm itself needs no build step: it's one header.
+# Builds the tests and demos. TIC itself needs no build step: it's one header.
 #
 #   make                build the demos
 #   make test           build and run the unit tests
@@ -40,7 +40,7 @@ demos: $(DEMOS:%=$(BUILD)/%)
 tutorial: $(TUTORIAL:%=$(BUILD)/tutorial/%)
 
 # Every target rebuilds if the header or test helpers change.
-HEADERS = cterm.h tests/test.h tests/vt.h
+HEADERS = tic.h tests/test.h tests/vt.h
 
 $(BUILD)/%: demo/%.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
@@ -48,7 +48,7 @@ $(BUILD)/%: demo/%.c $(HEADERS) | $(BUILD)
 $(BUILD)/test_%: tests/test_%.c $(HEADERS) tutorial/system-monitor/stats.h | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/tutorial/%: tutorial/system-monitor/%.c cterm.h tutorial/system-monitor/stats.h
+$(BUILD)/tutorial/%: tutorial/system-monitor/%.c tic.h tutorial/system-monitor/stats.h
 	@mkdir -p $(BUILD)/tutorial
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -89,9 +89,9 @@ test-link:
 	$(BUILD)/link/extern
 	$(CC) $(CFLAGS) $(LINK)/static.c -o $(BUILD)/link/static
 	$(BUILD)/link/static
-	$(CC) $(CFLAGS) -DCTERM_NO_UI $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/no_ui
+	$(CC) $(CFLAGS) -DTIC_NO_UI $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/no_ui
 	$(BUILD)/link/no_ui
-	$(CC) $(CFLAGS) -DCTERM_MAX_MARKS=8 $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/marks
+	$(CC) $(CFLAGS) -DTIC_MAX_MARKS=8 $(LINK)/main.c $(LINK)/other.c -o $(BUILD)/link/marks
 	$(BUILD)/link/marks
 	$(CC) $(CFLAGS) $(LINK)/header_only.c -c -o $(BUILD)/link/header_only.o
 	$(CC) -std=gnu99 $(WARN) -I. $(LINK)/late_implementation.c -o $(BUILD)/link/late

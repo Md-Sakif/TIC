@@ -1,7 +1,7 @@
 /* Checks the tutorial's stats.h gives sensible answers on the real OS. It needs no
  * terminal, so this also proves the Windows and macOS versions work in CI. */
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 #include "stats.h"
 #include "test.h"
 

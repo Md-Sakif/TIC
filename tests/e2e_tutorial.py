@@ -21,7 +21,7 @@ CTRL_Q = b"\x11"
 
 # The step, text it must show, and the key that quits it.
 STEPS = [
-    (1, b"monitor", QUIT),  # cterm skips blank cells, so the words arrive separately
+    (1, b"monitor", QUIT),  # TIC skips blank cells, so the words arrive separately
     (2, b"System Monitor", QUIT),
     (3, b"Processes", QUIT),
     (4, b"Usage:", QUIT),

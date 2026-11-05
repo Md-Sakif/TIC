@@ -2,13 +2,13 @@
  *
  * A test file looks like this:
  *
- *     #define CTERM_IMPLEMENTATION
- *     #include "cterm.h"
+ *     #define TIC_IMPLEMENTATION
+ *     #include "tic.h"
  *     #include "test.h"
  *
  *     static void test_something(void) {
  *         CHECK(1 + 1 == 2);
- *         CHECK_INT(cterm_char_width('a'), 1);
+ *         CHECK_INT(tic_char_width('a'), 1);
  *     }
  *
  *     int main(void) {
@@ -16,13 +16,13 @@
  *         return test_summary();
  *     }
  *
- * Including the implementation gives tests access to internal `cterm__` functions,
+ * Including the implementation gives tests access to internal `tic__` functions,
  * so the parser, renderer and widgets can be tested without a terminal.
  * A failed CHECK reports the problem and the test carries on, so one run shows
  * every failure.
  */
-#ifndef CTERM_TEST_H
-#define CTERM_TEST_H
+#ifndef TIC_TEST_H
+#define TIC_TEST_H
 
 #include <stdio.h>
 #include <string.h>
@@ -76,4 +76,4 @@ static int test_summary(void) {
     return test_failures ? 1 : 0;
 }
 
-#endif /* CTERM_TEST_H */
+#endif /* TIC_TEST_H */

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end tests: runs a real cterm program inside a real pseudo-terminal.
+"""End-to-end tests: runs a real TIC program inside a real pseudo-terminal.
 
 The unit tests prove the parser and renderer are correct on their own. These prove
 everything works together with an actual OS terminal: raw mode, restoring settings,
@@ -27,7 +27,7 @@ failures = []
 current_test = "startup"
 
 # Sanitizer builds have their own crash handlers, which report the crash and exit with
-# status 1. cterm chains to them correctly, but the crash tests also check the exit
+# status 1. TIC chains to them correctly, but the crash tests also check the exit
 # status, so ask the sanitizer to leave those signals alone.
 TEST_ENV = dict(os.environ, ASAN_OPTIONS="handle_segv=0:handle_sigbus=0:handle_sigfpe=0:handle_abort=0")
 
@@ -467,7 +467,7 @@ def check_crash_recovery(trigger, expected_exit):
 
 
 def test_recovers_from_exit_call():
-    # The app calls exit() without ever calling cterm_shutdown().
+    # The app calls exit() without ever calling tic_shutdown().
     check_crash_recovery(lambda t: t.send(b"\x05"), 7)
 
 
@@ -481,7 +481,7 @@ def test_recovers_from_signals():
 
 
 def test_ignored_signal_stays_ignored():
-    # `nohup` makes SIGHUP ignored, and cterm has to respect that.
+    # `nohup` makes SIGHUP ignored, and TIC has to respect that.
     t = Terminal(ignore_signal=signal.SIGHUP)
     t.wait_for_log("ready 80 24")
     t.process.send_signal(signal.SIGHUP)
@@ -497,7 +497,7 @@ def test_suspend_with_no_shell_keeps_working():
     t = Terminal()
     t.wait_for_log("ready 80 24")
     t.send(b"\x13")
-    check(t.wait_for_log("suspend 0"), "cterm_suspend did not return")
+    check(t.wait_for_log("suspend 0"), "tic_suspend did not return")
     check(is_raw(t), "terminal should be raw again")
     t.send(b"a")
     check(t.wait_for_log("key 97 0"), "input stopped working after the suspend")
@@ -528,7 +528,7 @@ def test_suspend_under_a_job_control_shell():
 
     t.output = b""
     t.process.resume()
-    check(t.wait_for_log("suspend 0"), "cterm_suspend did not return after resuming")
+    check(t.wait_for_log("suspend 0"), "tic_suspend did not return after resuming")
     check(t.wait_for_log("resize 80 24"), "resuming should ask the app to redraw")
     check(is_raw(t), "terminal should be raw again after resuming")
     check(b"\x1b[?1049h" in t.drain(0.1), "did not go back to the alternate screen")

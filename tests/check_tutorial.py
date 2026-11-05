@@ -13,7 +13,7 @@ That exact code has to appear in that file, which is compiled and run by the tes
 It also checks that:
   - every step program is used by its tutorial
   - every relative link goes to a file that exists
-  - every cterm name a tutorial mentions exists in cterm.h
+  - every TIC name a tutorial mentions exists in tic.h
 
 Usage: python3 tests/check_tutorial.py
 """
@@ -27,7 +27,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 problems = []
 checked_blocks = 0
 
-with open(os.path.join(ROOT, "cterm.h"), encoding="utf-8") as f:
+with open(os.path.join(ROOT, "tic.h"), encoding="utf-8") as f:
     header = f.read()
 with open(os.path.join(ROOT, "tutorial", "system-monitor", "stats.h"), encoding="utf-8") as f:
     stats_header = f.read()
@@ -58,9 +58,9 @@ for document in documents:
         if not os.path.exists(os.path.join(folder, target)):
             problems.append("%s links to %s, which doesn't exist" % (name, target))
 
-    for cterm_name in sorted(set(re.findall(r"\b(?:cterm|CTERM)_[A-Za-z0-9_]+\b", text))):
-        if not re.search(r"\b%s\b" % re.escape(cterm_name), header):
-            problems.append("%s mentions %s, which isn't in cterm.h" % (name, cterm_name))
+    for tic_name in sorted(set(re.findall(r"\b(?:tic|TIC)_[A-Za-z0-9_]+\b", text))):
+        if not re.search(r"\b%s\b" % re.escape(tic_name), header):
+            problems.append("%s mentions %s, which isn't in tic.h" % (name, tic_name))
 
     for stats_name in sorted(set(re.findall(r"\bstats_[a-z_]+\b", text))):
         if not re.search(r"\b%s\b" % re.escape(stats_name), stats_header):

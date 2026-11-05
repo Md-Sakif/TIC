@@ -84,7 +84,7 @@ Either works, and the tutorial's code is the same for both. **Visual Studio** is
    ```sh
    pacman -S --needed mingw-w64-ucrt-x86_64-gcc
    ```
-3. Close that window. **Don't use it for this tutorial**, because cterm programs can't run in it: it isn't a real Windows console.
+3. Close that window. **Don't use it for this tutorial**, because TIC programs can't run in it: it isn't a real Windows console.
 4. Open **Command Prompt** from the Start menu. Use that as your terminal for this tutorial. Each time you open it, run this first, so it can find the compiler:
    ```bat
    set PATH=C:\msys64\ucrt64\bin;%PATH%
@@ -97,11 +97,11 @@ Make a folder for your project, and download the two files you need into it. The
 ```sh
 mkdir sysmon
 cd sysmon
-curl -O https://raw.githubusercontent.com/Md-Sakif/cTerm/main/cterm.h
-curl -O https://raw.githubusercontent.com/Md-Sakif/cTerm/main/tutorial/system-monitor/stats.h
+curl -O https://raw.githubusercontent.com/Md-Sakif/TIC/main/tic.h
+curl -O https://raw.githubusercontent.com/Md-Sakif/TIC/main/tutorial/system-monitor/stats.h
 ```
 
-- **`cterm.h`** is the cterm library. It's one file, and there's nothing to install.
+- **`tic.h`** is the TIC library. It's one file, and there's nothing to install.
 - **`stats.h`** is a helper written for this tutorial. It asks your operating system for its CPU, memory and process figures. Every OS does that differently, so this file keeps that mess out of your way.
 
 Create an empty file called `sysmon.c` in the same folder, using any text editor. This is the file you'll work on for the whole tutorial.
@@ -128,30 +128,30 @@ Put this in `sysmon.c`:
 
 <!-- file: step1.c -->
 ```c
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #include <stdio.h>
 
 int main(void) {
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
 
     for (;;) {
-        cterm_buffer *screen = cterm_screen();
-        cterm_event event;
+        tic_buffer *screen = tic_screen();
+        tic_event event;
 
-        cterm_clear(screen);
-        cterm_text(screen, 2, 1, cterm_plain(), "My system monitor. Press q to quit.");
-        cterm_present();
+        tic_clear(screen);
+        tic_text(screen, 2, 1, tic_plain(), "My system monitor. Press q to quit.");
+        tic_present();
 
-        if (cterm_poll(&event, -1) < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (tic_poll(&event, -1) < 0) break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }
 ```
@@ -162,22 +162,22 @@ Build and run it with the command from [earlier](#how-to-build-and-run-your-prog
 
 ### What's going on
 
-The two lines at the top bring in cterm. `#define CTERM_IMPLEMENTATION` has to come first, before any other `#include`. It tells cterm that this is the file that should contain the library's code.
+The two lines at the top bring in TIC. `#define TIC_IMPLEMENTATION` has to come first, before any other `#include`. It tells TIC that this is the file that should contain the library's code.
 
 Then the program does this:
 
-1. **`cterm_init()`** takes over the terminal. Normally a terminal waits for you to press Enter and shows what you type. A program like this needs every key straight away, and needs to control the whole screen. If this fails, we print why and stop.
+1. **`tic_init()`** takes over the terminal. Normally a terminal waits for you to press Enter and shows what you type. A program like this needs every key straight away, and needs to control the whole screen. If this fails, we print why and stop.
 2. **`for (;;)`** repeats forever, until something calls `break`. This loop is the heart of every terminal app.
-3. **`cterm_screen()`** gets the screen, as something you can draw on.
-4. **`cterm_clear`** blanks it, and **`cterm_text`** writes text starting at column 2, row 1. Both count from 0, so that's the third column and the second row.
-5. **`cterm_present()`** sends your drawing to the terminal. Nothing appears until you call this.
-6. **`cterm_poll`** waits for something to happen. The `-1` means "wait as long as it takes". If the terminal has gone away, it returns a negative number, and we stop.
+3. **`tic_screen()`** gets the screen, as something you can draw on.
+4. **`tic_clear`** blanks it, and **`tic_text`** writes text starting at column 2, row 1. Both count from 0, so that's the third column and the second row.
+5. **`tic_present()`** sends your drawing to the terminal. Nothing appears until you call this.
+6. **`tic_poll`** waits for something to happen. The `-1` means "wait as long as it takes". If the terminal has gone away, it returns a negative number, and we stop.
 7. If the event was the `q` key, `break` leaves the loop.
-8. **`cterm_shutdown()`** gives the terminal back.
+8. **`tic_shutdown()`** gives the terminal back.
 
-This is the idea that makes the rest easy: **every time around the loop, redraw the whole screen from scratch.** You never have to work out what changed. cterm compares your drawing with what's already on the screen and only sends the difference, so this is fast.
+This is the idea that makes the rest easy: **every time around the loop, redraw the whole screen from scratch.** You never have to work out what changed. TIC compares your drawing with what's already on the screen and only sends the difference, so this is fast.
 
-**C note:** `cterm_buffer *screen` means "`screen` points to a buffer". The `*` is how C says "a pointer to", which is a way of referring to something stored elsewhere. `&event` means "the address of `event`", so that `cterm_poll` can fill it in for us.
+**C note:** `tic_buffer *screen` means "`screen` points to a buffer". The `*` is how C says "a pointer to", which is a way of referring to something stored elsewhere. `&event` means "the address of `event`", so that `tic_poll` can fill it in for us.
 
 Stuck? Compare with [step1.c](step1.c).
 
@@ -190,41 +190,41 @@ The drawing code is about to grow a lot, so let's give it its own function. **Re
 <!-- file: step2.c -->
 ```c
 static void draw(void) {
-    cterm_buffer *screen = cterm_screen();
-    cterm_style title_style = cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD);
-    cterm_style help_style = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
+    tic_buffer *screen = tic_screen();
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
-    cterm_clear(screen);
+    tic_clear(screen);
 
     /* A coloured bar across the top, with the title on it. */
-    cterm_fill(screen, cterm_rect_make(0, 0, screen->width, 1), ' ', title_style);
-    cterm_text(screen, 1, 0, title_style, "System Monitor");
+    tic_fill(screen, tic_rect_make(0, 0, screen->width, 1), ' ', title_style);
+    tic_text(screen, 1, 0, title_style, "System Monitor");
 
     /* A line of help along the bottom. */
-    cterm_text(screen, 1, screen->height - 1, help_style, "q: quit");
+    tic_text(screen, 1, screen->height - 1, help_style, "q: quit");
 
-    cterm_present();
+    tic_present();
 }
 ```
 
 <!-- file: step2.c -->
 ```c
 int main(void) {
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
 
     for (;;) {
-        cterm_event event;
+        tic_event event;
 
         draw();
 
-        if (cterm_poll(&event, -1) < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (tic_poll(&event, -1) < 0) break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }
 ```
@@ -233,8 +233,8 @@ int main(void) {
 
 ### What's going on
 
-- **A style** is how text looks: its text colour, its background colour, and extras such as bold. `cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD)` means bold black text on cyan. `CTERM_DEFAULT` means "whatever colour the terminal normally uses", and `0` means no extras.
-- **A rectangle**, made with `cterm_rect_make(x, y, width, height)`, describes an area of the screen. `cterm_fill` fills it with a character. Filling with spaces in a coloured style is how you make a coloured bar.
+- **A style** is how text looks: its text colour, its background colour, and extras such as bold. `tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD)` means bold black text on cyan. `TIC_DEFAULT` means "whatever colour the terminal normally uses", and `0` means no extras.
+- **A rectangle**, made with `tic_rect_make(x, y, width, height)`, describes an area of the screen. `tic_fill` fills it with a character. Filling with spaces in a coloured style is how you make a coloured bar.
 - **`screen->width` and `screen->height`** give the size of the window. The bottom row is `height - 1`, because rows are counted from 0.
 
 **C note:** `screen->width` means "the `width` inside the thing `screen` points to". `static` in front of a function means it's only used in this file. A function must be written above the code that calls it, which is why `draw` goes above `main`.
@@ -245,16 +245,16 @@ Stuck? Compare with [step2.c](step2.c).
 
 **Goal:** split the screen into areas for CPU, memory and processes.
 
-You could work out every position by hand, but it would break whenever the window changes size. Instead, describe the layout, and let cterm do the arithmetic.
+You could work out every position by hand, but it would break whenever the window changes size. Instead, describe the layout, and let TIC do the arithmetic.
 
 **Add this function above `draw`.** It draws a box with a title:
 
 <!-- file: step3.c -->
 ```c
-static void draw_panel(cterm_buffer *screen, cterm_rect area, const char *title) {
-    cterm_style border = cterm_style_make(CTERM_BRIGHT_BLUE, CTERM_DEFAULT, 0);
-    cterm_box(screen, area, CTERM_BORDER_ROUNDED, border);
-    cterm_textf(screen, area.x + 2, area.y, border, " %s ", title);
+static void draw_panel(tic_buffer *screen, tic_rect area, const char *title) {
+    tic_style border = tic_style_make(TIC_BRIGHT_BLUE, TIC_DEFAULT, 0);
+    tic_box(screen, area, TIC_BORDER_ROUNDED, border);
+    tic_textf(screen, area.x + 2, area.y, border, " %s ", title);
 }
 ```
 
@@ -263,29 +263,29 @@ static void draw_panel(cterm_buffer *screen, cterm_rect area, const char *title)
 <!-- file: step3.c -->
 ```c
 static void draw(void) {
-    cterm_buffer *screen = cterm_screen();
-    cterm_style title_style = cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD);
-    cterm_style help_style = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
+    tic_buffer *screen = tic_screen();
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
-    int row_sizes[] = { CTERM_FIXED(1), CTERM_FIXED(7), CTERM_FILL(1), CTERM_FIXED(1) };
-    int top_sizes[] = { CTERM_FILL(2), CTERM_FILL(1) };
-    cterm_rect rows[4], top[2];
+    int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
+    int top_sizes[] = { TIC_FILL(2), TIC_FILL(1) };
+    tic_rect rows[4], top[2];
 
-    cterm_split_rows(cterm_bounds(screen), 0, row_sizes, 4, rows);
-    cterm_split_columns(rows[1], 0, top_sizes, 2, top);
+    tic_split_rows(tic_bounds(screen), 0, row_sizes, 4, rows);
+    tic_split_columns(rows[1], 0, top_sizes, 2, top);
 
-    cterm_clear(screen);
+    tic_clear(screen);
 
-    cterm_fill(screen, rows[0], ' ', title_style);
-    cterm_text(screen, 1, rows[0].y, title_style, "System Monitor");
+    tic_fill(screen, rows[0], ' ', title_style);
+    tic_text(screen, 1, rows[0].y, title_style, "System Monitor");
 
     draw_panel(screen, top[0], "CPU");
     draw_panel(screen, top[1], "Memory");
     draw_panel(screen, rows[2], "Processes");
 
-    cterm_text(screen, 1, rows[3].y, help_style, "q: quit");
+    tic_text(screen, 1, rows[3].y, help_style, "q: quit");
 
-    cterm_present();
+    tic_present();
 }
 ```
 
@@ -312,16 +312,16 @@ Resize the window, and the panels adjust to fit.
 
 ### What's going on
 
-`cterm_split_rows` cuts an area into rows. You give it a list of sizes, and it fills in a list of rectangles:
+`tic_split_rows` cuts an area into rows. You give it a list of sizes, and it fills in a list of rectangles:
 
 | Row | Size | Used for |
 |---|---|---|
-| `rows[0]` | `CTERM_FIXED(1)`: exactly 1 row | Title bar |
-| `rows[1]` | `CTERM_FIXED(7)`: exactly 7 rows | CPU and memory |
-| `rows[2]` | `CTERM_FILL(1)`: all the rows left over | Process list |
-| `rows[3]` | `CTERM_FIXED(1)`: exactly 1 row | Help line |
+| `rows[0]` | `TIC_FIXED(1)`: exactly 1 row | Title bar |
+| `rows[1]` | `TIC_FIXED(7)`: exactly 7 rows | CPU and memory |
+| `rows[2]` | `TIC_FILL(1)`: all the rows left over | Process list |
+| `rows[3]` | `TIC_FIXED(1)`: exactly 1 row | Help line |
 
-Then `cterm_split_columns` cuts `rows[1]` into two side by side. `CTERM_FILL(2)` and `CTERM_FILL(1)` share the space 2 to 1, so CPU gets two thirds. Splitting one piece again like this is how you can build any layout.
+Then `tic_split_columns` cuts `rows[1]` into two side by side. `TIC_FILL(2)` and `TIC_FILL(1)` share the space 2 to 1, so CPU gets two thirds. Splitting one piece again like this is how you can build any layout.
 
 **C note:** `int row_sizes[] = { ... }` makes a list (an "array") of numbers. `rows[0]` means the first item in a list, because counting starts from 0. `const char *title` is how C passes a piece of text to a function.
 
@@ -337,8 +337,8 @@ So far, the program only redraws when you press a key. A system monitor has to u
 
 <!-- file: step4.c -->
 ```c
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 #include "stats.h"
 
 #include <stdio.h>
@@ -378,22 +378,22 @@ static void format_bytes(char *out, size_t size, unsigned long long bytes) {
 
 <!-- file: step4.c -->
 ```c
-static void draw_cpu(cterm_buffer *screen, cterm_rect area) {
-    cterm_rect inside = cterm_rect_inset(area, 1);
+static void draw_cpu(tic_buffer *screen, tic_rect area) {
+    tic_rect inside = tic_rect_inset(area, 1);
     draw_panel(screen, area, "CPU");
-    cterm_textf(screen, inside.x, inside.y, cterm_plain(), "Usage: %.1f%%", cpu_percent);
+    tic_textf(screen, inside.x, inside.y, tic_plain(), "Usage: %.1f%%", cpu_percent);
 }
 ```
 
 <!-- file: step4.c -->
 ```c
-static void draw_memory(cterm_buffer *screen, cterm_rect area) {
-    cterm_rect inside = cterm_rect_inset(area, 1);
+static void draw_memory(tic_buffer *screen, tic_rect area) {
+    tic_rect inside = tic_rect_inset(area, 1);
     char used[32], total[32];
     format_bytes(used, sizeof used, memory_used);
     format_bytes(total, sizeof total, memory_total);
     draw_panel(screen, area, "Memory");
-    cterm_textf(screen, inside.x, inside.y, cterm_plain(), "%s of %s", used, total);
+    tic_textf(screen, inside.x, inside.y, tic_plain(), "%s of %s", used, total);
 }
 ```
 
@@ -413,13 +413,13 @@ static void draw_memory(cterm_buffer *screen, cterm_rect area) {
 int main(void) {
     time_t last_update = 0;
 
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
 
     for (;;) {
-        cterm_event event;
+        tic_event event;
         int result;
 
         /* Get new numbers whenever the clock has moved on to a new second. */
@@ -431,12 +431,12 @@ int main(void) {
         draw();
 
         /* Wait for a key, but only for a quarter of a second. */
-        result = cterm_poll(&event, 250);
+        result = tic_poll(&event, 250);
         if (result < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }
 ```
@@ -445,15 +445,15 @@ int main(void) {
 
 ### What's going on
 
-The important change is `cterm_poll(&event, 250)`. Before, the `-1` meant "wait forever for a key". Now, it waits at most 250 milliseconds, so the loop keeps going round even if nobody touches the keyboard.
+The important change is `tic_poll(&event, 250)`. Before, the `-1` meant "wait forever for a key". Now, it waits at most 250 milliseconds, so the loop keeps going round even if nobody touches the keyboard.
 
-A key press still gets through straight away, because `cterm_poll` returns as soon as something happens. So why not wait a full second? That wait isn't lined up with the clock, so it could end just before a new second begins, and the next update would then come almost two seconds after the last one. Checking four times a second keeps the updates on time, and it costs almost nothing, because a redraw with no changes sends nothing to the terminal.
+A key press still gets through straight away, because `tic_poll` returns as soon as something happens. So why not wait a full second? That wait isn't lined up with the clock, so it could end just before a new second begins, and the next update would then come almost two seconds after the last one. Checking four times a second keeps the updates on time, and it costs almost nothing, because a redraw with no changes sends nothing to the terminal.
 
 Pressing keys also makes the loop go round faster, which is why the figures aren't simply updated every time around. `time(NULL)` gives the current time in seconds, and comparing it with `last_update` means they refresh once per second, however fast you press keys.
 
-`cterm_rect_inset(area, 1)` gives the area inside a panel's border, by shrinking it by 1 on every side.
+`tic_rect_inset(area, 1)` gives the area inside a panel's border, by shrinking it by 1 on every side.
 
-`cterm_textf` works like C's `printf`: `%.1f` is a number with one decimal place, `%s` is a piece of text, and `%%` is a literal percent sign.
+`tic_textf` works like C's `printf`: `%.1f` is a number with one decimal place, `%s` is a piece of text, and `%%` is a literal percent sign.
 
 **C note:** `double` is a number with decimals. `unsigned long long` is a very large whole number that can't go negative, which is what you need for counting gigabytes in bytes. `(double)bytes` converts it to a decimal, so the division keeps its fractional part. `char used[32]` is space for up to 31 characters of text, and `sizeof used` is its size.
 
@@ -468,14 +468,14 @@ Stuck? Compare with [step4.c](step4.c).
 <!-- file: step5.c -->
 ```c
 /* Draws a bar like this, where `percent` says how much is filled in:  #######---- */
-static void draw_bar(cterm_buffer *screen, int x, int y, int width, double percent) {
+static void draw_bar(tic_buffer *screen, int x, int y, int width, double percent) {
     int filled = (int)(width * percent / 100.0 + 0.5);
-    cterm_color color = percent < 60.0 ? CTERM_GREEN : percent < 85.0 ? CTERM_YELLOW : CTERM_RED;
+    tic_color color = percent < 60.0 ? TIC_GREEN : percent < 85.0 ? TIC_YELLOW : TIC_RED;
 
-    cterm_fill(screen, cterm_rect_make(x, y, filled, 1), 0x2588, /* a solid block */
-               cterm_style_make(color, CTERM_DEFAULT, 0));
-    cterm_fill(screen, cterm_rect_make(x + filled, y, width - filled, 1), 0x2591, /* a light block */
-               cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0));
+    tic_fill(screen, tic_rect_make(x, y, filled, 1), 0x2588, /* a solid block */
+             tic_style_make(color, TIC_DEFAULT, 0));
+    tic_fill(screen, tic_rect_make(x + filled, y, width - filled, 1), 0x2591, /* a light block */
+             tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0));
 }
 ```
 
@@ -483,25 +483,25 @@ static void draw_bar(cterm_buffer *screen, int x, int y, int width, double perce
 
 <!-- file: step5.c -->
 ```c
-static void draw_cpu(cterm_buffer *screen, cterm_rect area) {
-    cterm_rect inside = cterm_rect_inset(area, 1);
+static void draw_cpu(tic_buffer *screen, tic_rect area) {
+    tic_rect inside = tic_rect_inset(area, 1);
     draw_panel(screen, area, "CPU");
-    cterm_textf(screen, inside.x, inside.y, cterm_plain(), "%5.1f%%", cpu_percent);
+    tic_textf(screen, inside.x, inside.y, tic_plain(), "%5.1f%%", cpu_percent);
     draw_bar(screen, inside.x + 7, inside.y, inside.w - 7, cpu_percent);
 }
 ```
 
 <!-- file: step5.c -->
 ```c
-static void draw_memory(cterm_buffer *screen, cterm_rect area) {
-    cterm_rect inside = cterm_rect_inset(area, 1);
+static void draw_memory(tic_buffer *screen, tic_rect area) {
+    tic_rect inside = tic_rect_inset(area, 1);
     double percent = memory_total > 0 ? 100.0 * (double)memory_used / (double)memory_total : 0.0;
     char used[32], total[32];
     format_bytes(used, sizeof used, memory_used);
     format_bytes(total, sizeof total, memory_total);
     draw_panel(screen, area, "Memory");
     draw_bar(screen, inside.x, inside.y, inside.w, percent);
-    cterm_textf(screen, inside.x, inside.y + 1, cterm_plain(), "%s of %s", used, total);
+    tic_textf(screen, inside.x, inside.y + 1, tic_plain(), "%s of %s", used, total);
 }
 ```
 
@@ -557,8 +557,8 @@ static void update_stats(void) {
 <!-- file: step6.c -->
 ```c
 /* Draws the history as a graph, with the newest value at the right-hand edge. */
-static void draw_graph(cterm_buffer *screen, cterm_rect area) {
-    cterm_style style = cterm_style_make(CTERM_BRIGHT_GREEN, CTERM_DEFAULT, 0);
+static void draw_graph(tic_buffer *screen, tic_rect area) {
+    tic_style style = tic_style_make(TIC_BRIGHT_GREEN, TIC_DEFAULT, 0);
     int column, level;
 
     for (column = 0; column < area.w && column < HISTORY_SIZE; column++) {
@@ -571,8 +571,8 @@ static void draw_graph(cterm_buffer *screen, cterm_rect area) {
         for (level = 0; level < area.h; level++) {
             int y = area.y + area.h - 1 - level;
             int here = eighths - level * 8;
-            if (here >= 8) cterm_put(screen, x, y, 0x2588, style);        /* a full block */
-            else if (here > 0) cterm_put(screen, x, y, 0x2580 + (uint32_t)here, style); /* a partial block */
+            if (here >= 8) tic_put(screen, x, y, 0x2588, style);        /* a full block */
+            else if (here > 0) tic_put(screen, x, y, 0x2580 + (uint32_t)here, style); /* a partial block */
         }
     }
 }
@@ -582,11 +582,11 @@ static void draw_graph(cterm_buffer *screen, cterm_rect area) {
 
 <!-- file: step6.c -->
 ```c
-static void draw_cpu(cterm_buffer *screen, cterm_rect area) {
-    cterm_rect inside = cterm_rect_inset(area, 1);
-    cterm_rect graph = cterm_rect_make(inside.x, inside.y + 1, inside.w, inside.h - 1);
+static void draw_cpu(tic_buffer *screen, tic_rect area) {
+    tic_rect inside = tic_rect_inset(area, 1);
+    tic_rect graph = tic_rect_make(inside.x, inside.y + 1, inside.w, inside.h - 1);
     draw_panel(screen, area, "CPU");
-    cterm_textf(screen, inside.x, inside.y, cterm_plain(), "%5.1f%%", cpu_percent);
+    tic_textf(screen, inside.x, inside.y, tic_plain(), "%5.1f%%", cpu_percent);
     draw_bar(screen, inside.x + 7, inside.y, inside.w - 7, cpu_percent);
     draw_graph(screen, graph);
 }
@@ -615,7 +615,7 @@ The clever part is the height. Unicode has blocks of 8 heights, from `0x2581` (o
 
 Each column works from the bottom up. Say a column needs to be 11 eighths tall. The bottom cell has 11 to show, which is more than 8, so it gets a full block. The cell above has 11 - 8 = 3 left, so it gets a three-eighths block. The next has none, so it stays blank.
 
-**C note:** `#define HISTORY_SIZE 120` gives a name to a number, so it's only written in one place. `for (i = 0; i < 10; i++)` counts `i` from 0 to 9. `uint32_t` is a whole number type that cterm uses for characters.
+**C note:** `#define HISTORY_SIZE 120` gives a name to a number, so it's only written in one place. `for (i = 0; i < 10; i++)` counts `i` from 0 to 9. `uint32_t` is a whole number type that TIC uses for characters.
 
 Stuck? Compare with [step6.c](step6.c).
 
@@ -623,14 +623,14 @@ Stuck? Compare with [step6.c](step6.c).
 
 **Goal:** use the big panel for a list of running programs, which you can scroll through.
 
-You could draw this by hand, but then you'd need to handle scrolling, selection and the mouse yourself. cterm has a ready-made list **widget** for that. A widget is a piece of interface that handles its own keys and drawing.
+You could draw this by hand, but then you'd need to handle scrolling, selection and the mouse yourself. TIC has a ready-made list **widget** for that. A widget is a piece of interface that handles its own keys and drawing.
 
 **Change the top of your file:**
 
 <!-- file: step7.c -->
 ```c
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 #include "stats.h"
 
 #include <stdio.h>
@@ -649,8 +649,8 @@ static stats_process processes[MAX_PROCESSES];
 static int process_count = 0;
 
 /* What the widgets remember between frames. */
-static cterm_ui ui;
-static cterm_list process_list;
+static tic_ui ui;
+static tic_list process_list;
 ```
 
 **Add this function above `update_stats`**, then **replace `update_stats`:**
@@ -700,14 +700,14 @@ static const char *process_row(int index, void *user_data) {
 
 <!-- file: step7.c -->
 ```c
-static void draw_processes(cterm_buffer *screen, cterm_rect area) {
-    cterm_style heading = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_BOLD);
-    cterm_rect inside = cterm_rect_inset(area, 1);
-    cterm_rect rows = cterm_rect_make(inside.x, inside.y + 1, inside.w, inside.h - 1);
+static void draw_processes(tic_buffer *screen, tic_rect area) {
+    tic_style heading = tic_style_make(TIC_DEFAULT, TIC_DEFAULT, TIC_BOLD);
+    tic_rect inside = tic_rect_inset(area, 1);
+    tic_rect rows = tic_rect_make(inside.x, inside.y + 1, inside.w, inside.h - 1);
 
     draw_panel(screen, area, "Processes");
-    cterm_textf(screen, inside.x, inside.y, heading, "%7s  %9s  %s", "PID", "MEMORY", "NAME");
-    cterm_ui_list_fn(&ui, rows, &process_list, process_count, process_row, NULL);
+    tic_textf(screen, inside.x, inside.y, heading, "%7s  %9s  %s", "PID", "MEMORY", "NAME");
+    tic_ui_list_fn(&ui, rows, &process_list, process_count, process_row, NULL);
 }
 ```
 
@@ -715,32 +715,32 @@ static void draw_processes(cterm_buffer *screen, cterm_rect area) {
 
 <!-- file: step7.c -->
 ```c
-static void draw(const cterm_event *event) {
-    cterm_buffer *screen = cterm_screen();
-    cterm_style title_style = cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD);
-    cterm_style help_style = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
+static void draw(const tic_event *event) {
+    tic_buffer *screen = tic_screen();
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
 
-    int row_sizes[] = { CTERM_FIXED(1), CTERM_FIXED(7), CTERM_FILL(1), CTERM_FIXED(1) };
-    int top_sizes[] = { CTERM_FILL(2), CTERM_FILL(1) };
-    cterm_rect rows[4], top[2];
+    int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
+    int top_sizes[] = { TIC_FILL(2), TIC_FILL(1) };
+    tic_rect rows[4], top[2];
 
-    cterm_split_rows(cterm_bounds(screen), 0, row_sizes, 4, rows);
-    cterm_split_columns(rows[1], 0, top_sizes, 2, top);
+    tic_split_rows(tic_bounds(screen), 0, row_sizes, 4, rows);
+    tic_split_columns(rows[1], 0, top_sizes, 2, top);
 
-    cterm_clear(screen);
-    cterm_ui_begin(&ui, screen, event);
+    tic_clear(screen);
+    tic_ui_begin(&ui, screen, event);
 
-    cterm_fill(screen, rows[0], ' ', title_style);
-    cterm_text(screen, 1, rows[0].y, title_style, "System Monitor");
+    tic_fill(screen, rows[0], ' ', title_style);
+    tic_text(screen, 1, rows[0].y, title_style, "System Monitor");
 
     draw_cpu(screen, top[0]);
     draw_memory(screen, top[1]);
     draw_processes(screen, rows[2]);
 
-    cterm_text(screen, 1, rows[3].y, help_style, "Up/Down: move  q: quit");
+    tic_text(screen, 1, rows[3].y, help_style, "Up/Down: move  q: quit");
 
-    cterm_ui_end(&ui);
-    cterm_present();
+    tic_ui_end(&ui);
+    tic_present();
 }
 ```
 
@@ -750,13 +750,13 @@ static void draw(const cterm_event *event) {
 ```c
 int main(void) {
     time_t last_update = 0;
-    cterm_event event;
+    tic_event event;
 
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
-    cterm_ui_init(&ui);
+    tic_ui_init(&ui);
     memset(&event, 0, sizeof event);
 
     for (;;) {
@@ -769,12 +769,12 @@ int main(void) {
 
         draw(&event);
 
-        result = cterm_poll(&event, 250);
+        result = tic_poll(&event, 250);
         if (result < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }
 ```
@@ -783,17 +783,17 @@ int main(void) {
 
 ### What's going on
 
-**You don't handle the arrow keys anywhere.** The widget does. That's why `draw` now takes the event: `cterm_ui_begin` hands it to the widgets, and the list reacts when it sees an arrow key.
+**You don't handle the arrow keys anywhere.** The widget does. That's why `draw` now takes the event: `tic_ui_begin` hands it to the widgets, and the list reacts when it sees an arrow key.
 
-Notice the new shape of the loop. An event arrives from `cterm_poll`, and the *next* time around, `draw(&event)` hands it to the widgets. That's why `event` now sits outside the loop, and why `memset` clears it before the first time around.
+Notice the new shape of the loop. An event arrives from `tic_poll`, and the *next* time around, `draw(&event)` hands it to the widgets. That's why `event` now sits outside the loop, and why `memset` clears it before the first time around.
 
-Widgets are "immediate mode": there's no list object to create or destroy. You call `cterm_ui_list_fn` every time you draw, and it draws the list as it stands right now. All it remembers is what's in `process_list`: which row is selected, and how far it's scrolled. That's why `ui` and `process_list` are `static` variables. They have to survive from one frame to the next.
+Widgets are "immediate mode": there's no list object to create or destroy. You call `tic_ui_list_fn` every time you draw, and it draws the list as it stands right now. All it remembers is what's in `process_list`: which row is selected, and how far it's scrolled. That's why `ui` and `process_list` are `static` variables. They have to survive from one frame to the next.
 
 The list doesn't take a list of strings. Instead, you hand it a function, `process_row`, and it asks for each row's text when it needs it. It only asks for rows that are on the screen, so a very long list is still fast.
 
 `"%7d  %9s  %s"` lines the columns up: the pid is 7 wide, the memory is 9 wide, and the name takes what's left.
 
-**C note:** `qsort` is C's built-in sort. It can sort anything, because you give it a function saying which of two items comes first. `memset(&event, 0, sizeof event)` fills `event` with zeros, which cterm reads as "no event".
+**C note:** `qsort` is C's built-in sort. It can sort anything, because you give it a function saying which of two items comes first. `memset(&event, 0, sizeof event)` fills `event` with zeros, which TIC reads as "no event".
 
 Stuck? Compare with [step7.c](step7.c).
 
@@ -807,8 +807,8 @@ There's a catch to plan for. In a search box, `q` has to type the letter q, so i
 
 <!-- file: step8.c -->
 ```c
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 #include "stats.h"
 
 #include <ctype.h>
@@ -832,9 +832,9 @@ static const stats_process *matches[MAX_PROCESSES];
 static int match_count = 0;
 
 /* What the widgets remember between frames. */
-static cterm_ui ui;
-static cterm_list process_list;
-static cterm_input search;
+static tic_ui ui;
+static tic_list process_list;
+static tic_input search;
 static char search_text[64];
 ```
 
@@ -893,21 +893,21 @@ static const char *process_row(int index, void *user_data) {
 
 <!-- file: step8.c -->
 ```c
-static void draw_processes(cterm_buffer *screen, cterm_rect area) {
-    cterm_style heading = cterm_style_make(CTERM_DEFAULT, CTERM_DEFAULT, CTERM_BOLD);
-    cterm_rect inside = cterm_rect_inset(area, 1);
-    cterm_rect search_row = cterm_rect_make(inside.x + 8, inside.y, inside.w - 8, 1);
-    cterm_rect rows = cterm_rect_make(inside.x, inside.y + 2, inside.w, inside.h - 2);
+static void draw_processes(tic_buffer *screen, tic_rect area) {
+    tic_style heading = tic_style_make(TIC_DEFAULT, TIC_DEFAULT, TIC_BOLD);
+    tic_rect inside = tic_rect_inset(area, 1);
+    tic_rect search_row = tic_rect_make(inside.x + 8, inside.y, inside.w - 8, 1);
+    tic_rect rows = tic_rect_make(inside.x, inside.y + 2, inside.w, inside.h - 2);
 
     draw_panel(screen, area, "Processes");
 
-    cterm_text(screen, inside.x, inside.y, heading, "Search:");
-    if (cterm_ui_input(&ui, search_row, &search) & CTERM_UI_CHANGED) {
+    tic_text(screen, inside.x, inside.y, heading, "Search:");
+    if (tic_ui_input(&ui, search_row, &search) & TIC_UI_CHANGED) {
         update_matches();
     }
 
-    cterm_textf(screen, inside.x, inside.y + 1, heading, "%7s  %9s  %s", "PID", "MEMORY", "NAME");
-    cterm_ui_list_fn(&ui, rows, &process_list, match_count, process_row, NULL);
+    tic_textf(screen, inside.x, inside.y + 1, heading, "%7s  %9s  %s", "PID", "MEMORY", "NAME");
+    tic_ui_list_fn(&ui, rows, &process_list, match_count, process_row, NULL);
 }
 ```
 
@@ -915,7 +915,7 @@ static void draw_processes(cterm_buffer *screen, cterm_rect area) {
 
 <!-- file: step8.c -->
 ```c
-    cterm_text(screen, 1, rows[3].y, help_style, "Tab: switch box  Up/Down: move  Ctrl+Q: quit");
+    tic_text(screen, 1, rows[3].y, help_style, "Tab: switch box  Up/Down: move  Ctrl+Q: quit");
 ```
 
 **And replace `main`:**
@@ -924,14 +924,14 @@ static void draw_processes(cterm_buffer *screen, cterm_rect area) {
 ```c
 int main(void) {
     time_t last_update = 0;
-    cterm_event event;
+    tic_event event;
 
-    if (cterm_init() != 0) {
-        fprintf(stderr, "Could not start: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "Could not start: %s\n", tic_error());
         return 1;
     }
-    cterm_ui_init(&ui);
-    cterm_input_init(&search, search_text, sizeof search_text);
+    tic_ui_init(&ui);
+    tic_input_init(&search, search_text, sizeof search_text);
     search.placeholder = "type part of a name";
     memset(&event, 0, sizeof event);
 
@@ -945,12 +945,12 @@ int main(void) {
 
         draw(&event);
 
-        result = cterm_poll(&event, 250);
+        result = tic_poll(&event, 250);
         if (result < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q' && (event.mods & CTERM_MOD_CTRL)) break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q' && (event.mods & TIC_MOD_CTRL)) break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }
 ```
@@ -959,13 +959,13 @@ int main(void) {
 
 ### What's going on
 
-With two widgets, each key has to go to one of them. The one that gets it has the **focus**. cterm gives the focus to the first widget you draw, and Tab moves it to the next, in the order you draw them. You didn't have to write any of that.
+With two widgets, each key has to go to one of them. The one that gets it has the **focus**. TIC gives the focus to the first widget you draw, and Tab moves it to the next, in the order you draw them. You didn't have to write any of that.
 
-`cterm_input` gives you a whole text box: typing, arrows, Backspace, Home and End, pasting, and scrolling when the text is too long. The text is stored in `search_text`, an ordinary C string you can read at any time.
+`tic_input` gives you a whole text box: typing, arrows, Backspace, Home and End, pasting, and scrolling when the text is too long. The text is stored in `search_text`, an ordinary C string you can read at any time.
 
-The call to `cterm_ui_input` tells you what happened, as well as drawing the box. `& CTERM_UI_CHANGED` asks "did the text change?". If so, we update the matches straight away, and the list shows the result in this same frame.
+The call to `tic_ui_input` tells you what happened, as well as drawing the box. `& TIC_UI_CHANGED` asks "did the text change?". If so, we update the matches straight away, and the list shows the result in this same frame.
 
-`event.mods` says which modifier keys were held down, so `(event.mods & CTERM_MOD_CTRL)` means "was Ctrl held?". Without this check, typing a `q` in the search box would quit the program.
+`event.mods` says which modifier keys were held down, so `(event.mods & TIC_MOD_CTRL)` means "was Ctrl held?". Without this check, typing a `q` in the search box would quit the program.
 
 **C note:** `matches` is a list of pointers. Rather than copying each matching process, it stores where to find it in `processes`, and that's what `&processes[i]` means. `matches[match_count++] = ...` stores an item, then adds 1 to the count. `for (; *text; text++)` walks along a string until it reaches its end.
 
@@ -1013,57 +1013,57 @@ If someone shrinks the window right down, the panels get squashed into nonsense.
 
 <!-- file: step9.c -->
 ```c
-static void draw(const cterm_event *event) {
-    cterm_buffer *screen = cterm_screen();
-    cterm_style title_style = cterm_style_make(CTERM_BLACK, CTERM_CYAN, CTERM_BOLD);
-    cterm_style help_style = cterm_style_make(CTERM_BRIGHT_BLACK, CTERM_DEFAULT, 0);
+static void draw(const tic_event *event) {
+    tic_buffer *screen = tic_screen();
+    tic_style title_style = tic_style_make(TIC_BLACK, TIC_CYAN, TIC_BOLD);
+    tic_style help_style = tic_style_make(TIC_BRIGHT_BLACK, TIC_DEFAULT, 0);
     char clock_text[16];
     time_t now = time(NULL);
 
-    int row_sizes[] = { CTERM_FIXED(1), CTERM_FIXED(7), CTERM_FILL(1), CTERM_FIXED(1) };
-    int top_sizes[] = { CTERM_FILL(2), CTERM_FILL(1) };
-    cterm_rect rows[4], top[2];
+    int row_sizes[] = { TIC_FIXED(1), TIC_FIXED(7), TIC_FILL(1), TIC_FIXED(1) };
+    int top_sizes[] = { TIC_FILL(2), TIC_FILL(1) };
+    tic_rect rows[4], top[2];
 
-    cterm_split_rows(cterm_bounds(screen), 0, row_sizes, 4, rows);
-    cterm_split_columns(rows[1], 0, top_sizes, 2, top);
+    tic_split_rows(tic_bounds(screen), 0, row_sizes, 4, rows);
+    tic_split_columns(rows[1], 0, top_sizes, 2, top);
 
-    cterm_clear(screen);
+    tic_clear(screen);
 
     /* A panel can't show much when the window is tiny, so say so instead. */
     if (screen->width < 50 || screen->height < 15) {
-        cterm_text(screen, 0, 0, cterm_plain(), "Please make this window bigger.");
-        cterm_present();
+        tic_text(screen, 0, 0, tic_plain(), "Please make this window bigger.");
+        tic_present();
         return;
     }
 
-    cterm_ui_begin(&ui, screen, event);
+    tic_ui_begin(&ui, screen, event);
 
-    cterm_fill(screen, rows[0], ' ', title_style);
-    cterm_text(screen, 1, rows[0].y, title_style, "System Monitor");
+    tic_fill(screen, rows[0], ' ', title_style);
+    tic_text(screen, 1, rows[0].y, title_style, "System Monitor");
     strftime(clock_text, sizeof clock_text, "%H:%M:%S", localtime(&now));
-    cterm_text(screen, screen->width - 9, rows[0].y, title_style, clock_text);
+    tic_text(screen, screen->width - 9, rows[0].y, title_style, clock_text);
 
     draw_cpu(screen, top[0]);
     draw_memory(screen, top[1]);
     draw_processes(screen, rows[2]);
 
-    cterm_textf(screen, 1, rows[3].y, help_style, "%d processes  Tab: switch box  Up/Down: move  Ctrl+Q: quit", process_count);
+    tic_textf(screen, 1, rows[3].y, help_style, "%d processes  Tab: switch box  Up/Down: move  Ctrl+Q: quit", process_count);
 
-    cterm_ui_end(&ui);
-    cterm_present();
+    tic_ui_end(&ui);
+    tic_present();
 }
 ```
 
 ### Turn on the mouse and add colour
 
-**In `main`, replace the `cterm_ui_init(&ui);` line with these lines:**
+**In `main`, replace the `tic_ui_init(&ui);` line with these lines:**
 
 <!-- file: step9.c -->
 ```c
-    cterm_set_mouse(CTERM_MOUSE_BUTTONS);
-    cterm_ui_init(&ui);
-    ui.theme.list_selected = cterm_style_make(CTERM_BLACK, CTERM_BRIGHT_CYAN, 0);
-    ui.theme.list_selected_idle = cterm_style_make(CTERM_BLACK, CTERM_WHITE, 0);
+    tic_set_mouse(TIC_MOUSE_BUTTONS);
+    tic_ui_init(&ui);
+    ui.theme.list_selected = tic_style_make(TIC_BLACK, TIC_BRIGHT_CYAN, 0);
+    ui.theme.list_selected_idle = tic_style_make(TIC_BLACK, TIC_WHITE, 0);
 ```
 
 Mouse reporting is off by default, because it stops people selecting text with the mouse. A list you can click and scroll is worth that trade here.
@@ -1076,48 +1076,48 @@ Mouse reporting is off by default, because it stops people selecting text with t
 
 <!-- file: step9.c -->
 ```c
-        if (event.type == CTERM_EVENT_KEY && (event.mods & CTERM_MOD_CTRL)) {
+        if (event.type == TIC_EVENT_KEY && (event.mods & TIC_MOD_CTRL)) {
             if (event.key == 'q') break;
-            if (event.key == 'z') cterm_suspend();
-            if (event.key == 'l') cterm_redraw();
+            if (event.key == 'z') tic_suspend();
+            if (event.key == 'l') tic_redraw();
         }
 ```
 
-- **Ctrl+Z** normally pauses a terminal program, and returns you to the shell. cterm delivers it as an ordinary key, so a program has to do this itself by calling `cterm_suspend()`. Type `fg` in your shell to come back. Windows doesn't have this feature, so there it does nothing.
+- **Ctrl+Z** normally pauses a terminal program, and returns you to the shell. TIC delivers it as an ordinary key, so a program has to do this itself by calling `tic_suspend()`. Type `fg` in your shell to come back. Windows doesn't have this feature, so there it does nothing.
 - **Ctrl+L** repaints the whole screen, a common habit in terminal programs. It's useful if another program has scribbled on the screen.
 
 **You should see** the finished monitor. Click on a row. Scroll with the mouse wheel. Drag the scrollbar. Shrink the window until the message appears.
 
 Stuck? Compare with [step9.c](step9.c).
 
-**You've built a real terminal application.** Along the way you've used the same pattern that nearly every cterm program uses: fetch data, draw everything, wait for an event, repeat.
+**You've built a real terminal application.** Along the way you've used the same pattern that nearly every TIC program uses: fetch data, draw everything, wait for an event, repeat.
 
 ## Ideas for what to do next
 
 Try these in any order. They're roughly easiest first.
 
 1. **Show the number of matches.** Put it in the panel's title, such as `Processes (12)`. Hint: build the title with `snprintf`, like `process_row` does.
-2. **Change the colours.** Try `CTERM_RGB(255, 128, 0)` for an orange graph. cterm picks the nearest colour on terminals that can't show it.
-3. **Make the refresh speed adjustable.** Make F5 and F6 change how often `update_stats` runs. Use function keys, because keys such as `+` and `-` would type into the search box. The key codes are `CTERM_KEY_F5` and `CTERM_KEY_F6`.
+2. **Change the colours.** Try `TIC_RGB(255, 128, 0)` for an orange graph. TIC picks the nearest colour on terminals that can't show it.
+3. **Make the refresh speed adjustable.** Make F5 and F6 change how often `update_stats` runs. Use function keys, because keys such as `+` and `-` would type into the search box. The key codes are `TIC_KEY_F5` and `TIC_KEY_F6`.
 4. **Sort by name or pid.** Write another comparison function for `qsort`, and use a key such as F2 to switch between them.
-5. **Show details.** When Enter is pressed on a row, `cterm_ui_list_fn` returns `CTERM_UI_SUBMITTED`. Show that program's details in a scrollable panel, using `cterm_ui_scroll_begin`.
+5. **Show details.** When Enter is pressed on a row, `tic_ui_list_fn` returns `TIC_UI_SUBMITTED`. Show that program's details in a scrollable panel, using `tic_ui_scroll_begin`.
 6. **Show each CPU core (Linux).** Add a function to `stats.h` that reads each core's line from `/proc/stat`, and draw a bar for each.
 
-The [main README](../../README.md) describes everything cterm can do, and [`demo/widgets.c`](../../demo/widgets.c) is another complete example.
+The [main README](../../README.md) describes everything TIC can do, and [`demo/widgets.c`](../../demo/widgets.c) is another complete example.
 
 ## If something goes wrong
 
-**`'cterm.h' file not found`:** the compiler can't find the file. Make sure `cterm.h` and `stats.h` are in the same folder as `sysmon.c`, and that your terminal is in that folder. `ls` (or `dir` on Windows) lists what's there.
+**`'tic.h' file not found`:** the compiler can't find the file. Make sure `tic.h` and `stats.h` are in the same folder as `sysmon.c`, and that your terminal is in that folder. `ls` (or `dir` on Windows) lists what's there.
 
 **`cc: command not found`, or `'cl' is not recognized`, or `'gcc' is not recognized`:** the compiler isn't installed, or Windows can't find it. With Visual Studio, make sure you're in the Developer Command Prompt. With MinGW, make sure you've run the `set PATH` command in this window. See [Install a compiler](#install-a-compiler).
 
-**`must come before every other #include`:** make sure `#define CTERM_IMPLEMENTATION` and `#include "cterm.h"` are the first two lines of code in your file.
+**`must come before every other #include`:** make sure `#define TIC_IMPLEMENTATION` and `#include "tic.h"` are the first two lines of code in your file.
 
 **`implicit declaration of function`, or `undeclared`:** you're probably using something that's written further down the file, or you've missed an `#include`. In C, things must be written above the code that uses them. Compare the order in your file with that step's complete program.
 
 **`Could not start: stdin and stdout must both be a terminal`:** you ran it with its input or output redirected, or from inside something that isn't a real terminal, such as some editors' Run buttons. Run it directly in a terminal. On Windows, the MSYS2 and Git Bash windows have this problem too. Use Command Prompt or the Developer Command Prompt instead.
 
-**My terminal is behaving strangely after a crash:** cterm repairs it after almost every kind of crash, but if it's still odd, type `reset` and press Enter. You may not see what you're typing. If Enter doesn't work, press Ctrl+J instead.
+**My terminal is behaving strangely after a crash:** TIC repairs it after almost every kind of crash, but if it's still odd, type `reset` and press Enter. You may not see what you're typing. If Enter doesn't work, press Ctrl+J instead.
 
 **The CPU always shows 0.0%:** you may be calling `update_stats` more than once in quick succession, leaving too little time to measure anything. It should run once per second. The very first reading is always 0.
 

@@ -1,30 +1,30 @@
-/* hello.c - the smallest complete cterm program. Press q to quit. */
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+/* hello.c - the smallest complete TIC program. Press q to quit. */
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #include <stdio.h>
 
 int main(void) {
-    if (cterm_init() != 0) {
-        fprintf(stderr, "cterm_init failed: %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(stderr, "tic_init failed: %s\n", tic_error());
         return 1;
     }
 
     for (;;) {
-        cterm_buffer *screen = cterm_screen();
-        cterm_event event;
+        tic_buffer *screen = tic_screen();
+        tic_event event;
 
-        /* Draw the whole screen. cterm only sends the cells that changed. */
-        cterm_clear(screen);
-        cterm_text(screen, 2, 1, cterm_style_make(CTERM_GREEN, CTERM_DEFAULT, CTERM_BOLD), "Hello, world!");
-        cterm_textf(screen, 2, 3, cterm_plain(), "This terminal is %d x %d. Press q to quit.", screen->width, screen->height);
-        cterm_present();
+        /* Draw the whole screen. TIC only sends the cells that changed. */
+        tic_clear(screen);
+        tic_text(screen, 2, 1, tic_style_make(TIC_GREEN, TIC_DEFAULT, TIC_BOLD), "Hello, world!");
+        tic_textf(screen, 2, 3, tic_plain(), "This terminal is %d x %d. Press q to quit.", screen->width, screen->height);
+        tic_present();
 
         /* Wait for something to happen. */
-        if (cterm_poll(&event, -1) < 0) break;
-        if (event.type == CTERM_EVENT_KEY && event.key == 'q') break;
+        if (tic_poll(&event, -1) < 0) break;
+        if (event.type == TIC_EVENT_KEY && event.key == 'q') break;
     }
 
-    cterm_shutdown();
+    tic_shutdown();
     return 0;
 }

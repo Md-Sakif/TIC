@@ -1,6 +1,6 @@
 /* The normal setup, part 1: this file holds the implementation. */
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,9 +11,9 @@ int other_file_width(const char *text);
 #endif
 
 int main(void) {
-    cterm_buffer *b = cterm_buffer_new(10, 1);
+    tic_buffer *b = tic_buffer_new(10, 1);
     if (!b) return 1;
-    cterm_text(b, 0, 0, cterm_plain(), "hi");
-    cterm_buffer_free(b);
+    tic_text(b, 0, 0, tic_plain(), "hi");
+    tic_buffer_free(b);
     return other_file_width("ab") == 2 ? 0 : 1;
 }

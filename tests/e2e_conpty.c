@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
     expect("key 97 0");
 
     /* Wine 10 drops this byte, and console waits then stop working, even in a program
-     * that doesn't use cterm. So this can only be checked on real Windows. */
+     * that doesn't use TIC. So this can only be checked on real Windows. */
     if (!running_on_wine()) {
         printf("  Ctrl+C arrives as a key and doesn't stop the app\n");
         send_bytes("\x03", 1);
@@ -194,7 +194,7 @@ int main(int argc, char **argv) {
     }
 
     /* Wine 10's ResizePseudoConsole changes nothing, even in a program that doesn't use
-     * cterm. So this can only be checked on real Windows. */
+     * TIC. So this can only be checked on real Windows. */
     if (!running_on_wine()) {
         printf("  resize\n");
         size.X = 100;

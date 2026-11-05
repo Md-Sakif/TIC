@@ -1,11 +1,11 @@
 /* e2e_app.c - the program tests/e2e.py runs inside a real pseudo-terminal.
  *
  * It writes every event, one per line, to the log file named on the command line,
- * so the test script can check what cterm reported without having to read the
+ * so the test script can check what TIC reported without having to read the
  * screen. Keys: Ctrl+Q quits, Ctrl+P presents a test frame, Ctrl+S suspends,
- * Ctrl+G crashes on purpose, and Ctrl+E calls exit() without cterm_shutdown(). */
-#define CTERM_IMPLEMENTATION
-#include "cterm.h"
+ * Ctrl+G crashes on purpose, and Ctrl+E calls exit() without tic_shutdown(). */
+#define TIC_IMPLEMENTATION
+#include "tic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,18 +19,18 @@ int main(int argc, char **argv) {
     if (!log_file) return 2;
     if (argc >= 3) timeout = atoi(argv[2]);
 
-    if (cterm_init() != 0) {
-        fprintf(log_file, "init-failed %s\n", cterm_error());
+    if (tic_init() != 0) {
+        fprintf(log_file, "init-failed %s\n", tic_error());
         fclose(log_file);
         return 3;
     }
-    cterm_set_mouse(CTERM_MOUSE_BUTTONS);
-    fprintf(log_file, "ready %d %d\n", cterm_screen()->width, cterm_screen()->height);
+    tic_set_mouse(TIC_MOUSE_BUTTONS);
+    fprintf(log_file, "ready %d %d\n", tic_screen()->width, tic_screen()->height);
     fflush(log_file);
 
     for (;;) {
-        cterm_event ev;
-        int got = cterm_poll(&ev, timeout);
+        tic_event ev;
+        int got = tic_poll(&ev, timeout);
         if (got < 0) {
             fprintf(log_file, "closed\n");
             break;
@@ -41,18 +41,18 @@ int main(int argc, char **argv) {
             continue;
         }
         switch (ev.type) {
-            case CTERM_EVENT_KEY:
+            case TIC_EVENT_KEY:
                 fprintf(log_file, "key %d %d\n", ev.key, ev.mods);
-                if (ev.mods & CTERM_MOD_CTRL) {
+                if (ev.mods & TIC_MOD_CTRL) {
                     if (ev.key == 'q') goto done;
                     if (ev.key == 'p') {
-                        cterm_buffer *s = cterm_screen();
-                        cterm_clear(s);
-                        cterm_text(s, 1, 1, cterm_style_make(CTERM_RED, CTERM_DEFAULT, CTERM_BOLD), "frame-marker");
-                        cterm_present();
+                        tic_buffer *s = tic_screen();
+                        tic_clear(s);
+                        tic_text(s, 1, 1, tic_style_make(TIC_RED, TIC_DEFAULT, TIC_BOLD), "frame-marker");
+                        tic_present();
                     }
                     if (ev.key == 's') {
-                        fprintf(log_file, "suspend %d\n", cterm_suspend());
+                        fprintf(log_file, "suspend %d\n", tic_suspend());
                     }
                     if (ev.key == 'e') {
                         fflush(log_file);
@@ -64,13 +64,13 @@ int main(int argc, char **argv) {
                     }
                 }
                 break;
-            case CTERM_EVENT_MOUSE:
+            case TIC_EVENT_MOUSE:
                 fprintf(log_file, "mouse %d %d %d %d\n", (int)ev.action, (int)ev.button, ev.x, ev.y);
                 break;
-            case CTERM_EVENT_RESIZE:
+            case TIC_EVENT_RESIZE:
                 fprintf(log_file, "resize %d %d\n", ev.width, ev.height);
                 break;
-            case CTERM_EVENT_PASTE:
+            case TIC_EVENT_PASTE:
                 fprintf(log_file, "paste %s\n", ev.text);
                 break;
             default:
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
         fflush(log_file);
     }
 done:
-    cterm_shutdown();
+    tic_shutdown();
     fprintf(log_file, "done\n");
     fclose(log_file);
     return 0;

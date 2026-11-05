@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Regenerates the Unicode width tables inside cterm.h.
+"""Regenerates the Unicode width tables inside tic.h.
 
 Run it after upgrading Python to pick up a newer Unicode version:
 
-    python3 tools/gen_width.py          # rewrites the tables in cterm.h
+    python3 tools/gen_width.py          # rewrites the tables in tic.h
     python3 tools/gen_width.py --check  # exits with 1 if they are out of date
 
 The tables come from Python's own `unicodedata` module, so there's nothing to
@@ -24,7 +24,7 @@ import re
 import sys
 import unicodedata
 
-HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cterm.h")
+HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tic.h")
 BEGIN = "/* BEGIN GENERATED WIDTH TABLES (tools/gen_width.py) */\n"
 END = "/* END GENERATED WIDTH TABLES */\n"
 
@@ -38,7 +38,7 @@ def width(cp):
     ch = chr(cp)
     category = unicodedata.category(ch)
     if 0xD800 <= cp <= 0xDFFF:
-        return 1  # surrogates aren't real characters; cterm never draws them
+        return 1  # surrogates aren't real characters; TIC never draws them
     if category in ("Mn", "Me", "Zl", "Zp"):
         return 0
     if category == "Cf" and cp not in VISIBLE_FORMAT:
@@ -67,7 +67,7 @@ def ranges(wanted):
 
 
 def c_table(name, items):
-    lines = ["static const cterm__range %s[] = {" % name]
+    lines = ["static const tic__range %s[] = {" % name]
     row = []
     for first, last in items:
         row.append("{0x%X,0x%X}," % (first, last))
@@ -84,8 +84,8 @@ def generated():
     return (
         BEGIN
         + "/* Unicode %s. Don't edit by hand: see tools/gen_width.py. */\n" % unicodedata.unidata_version
-        + c_table("cterm__zero_width", ranges(0))
-        + c_table("cterm__double_width", ranges(2))
+        + c_table("tic__zero_width", ranges(0))
+        + c_table("tic__double_width", ranges(2))
         + END
     )
 
@@ -95,11 +95,11 @@ def main():
         text = f.read()
     pattern = re.compile(re.escape(BEGIN) + ".*?" + re.escape(END), re.S)
     if not pattern.search(text):
-        sys.exit("generated-table markers not found in cterm.h")
+        sys.exit("generated-table markers not found in tic.h")
     updated = pattern.sub(lambda _: generated(), text)
     if "--check" in sys.argv:
         if updated != text:
-            sys.exit("cterm.h width tables are out of date: run tools/gen_width.py")
+            sys.exit("tic.h width tables are out of date: run tools/gen_width.py")
         print("width tables are up to date")
         return
     with open(HEADER, "w", encoding="utf-8", newline="") as f:
