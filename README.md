@@ -68,6 +68,8 @@ Then build and run it:
 
 To see more, run `make` and try `build/keys`, `build/dashboard` and `build/widgets`.
 
+**New to this?** Follow the step-by-step tutorial: [Build a system monitor](tutorial/system-monitor/README.md). It assumes no experience with terminal programs. More tutorials will be listed in [tutorial/](tutorial/README.md).
+
 ## Using it in a project
 
 In **exactly one** `.c` file, put these two lines **before every other `#include`**:
@@ -379,12 +381,15 @@ Nobody has yet looked at the output on a real Windows or macOS screen. The tests
 |---|---|
 | `cterm.h` | The whole library. There's a map of its sections at the top |
 | `demo/` | Example programs, which also serve as manual tests |
+| `tutorial/` | Tutorials, with a tested program for each step |
 | `tests/test_*.c` | Unit tests, which need no terminal |
 | `tests/vt.h` | A small terminal emulator, used to check the renderer's output |
 | `tests/e2e.py`, `tests/e2e_app.c` | End-to-end tests in a real pseudo-terminal (POSIX) |
 | `tests/e2e_conpty.c` | The same idea for Windows, using ConPTY |
 | `tests/link/` | Checks each documented way of including the header |
 | `tests/check_readme.py` | Compiles this README's examples and checks the names it uses |
+| `tests/check_tutorial.py` | Checks that the code shown in tutorials matches their tested programs |
+| `tests/e2e_tutorial.py` | Runs each tutorial step in a real pseudo-terminal |
 | `tools/gen_width.py` | Generates the Unicode width tables |
 | `.github/workflows/ci.yml` | Runs everything on Linux, macOS and Windows |
 
@@ -426,12 +431,14 @@ You need a C compiler, `make`, and Python 3 for the end-to-end tests.
 | `make test-all` | Unit tests with gcc, clang and C++, sanitizers, and link modes |
 | `make e2e` | Runs the tests in a real pseudo-terminal |
 | `make check-readme` | Compiles this README's examples and checks its names |
+| `make tutorial` | Builds the tutorial's step programs into `build/tutorial/` |
+| `make check-tutorial` | Checks that the code in tutorials matches their step programs |
 | `make windows` | Cross-compiles for Windows (needs MinGW) |
 | `make test-windows` | Runs the Windows unit tests under Wine |
 | `make e2e-windows` | Runs the ConPTY test under Wine, from a real terminal |
 | `tests\build_msvc.bat` | Builds and runs everything with MSVC, from a Developer Command Prompt |
 
-**Before committing,** run `make test-all e2e check-readme`. If you've touched anything Windows-related, run `make test-windows` too.
+**Before committing,** run `make test-all e2e check-readme check-tutorial`. If you've touched anything Windows-related, run `make test-windows` too.
 
 Debian and Ubuntu packages: `gcc-mingw-w64-x86-64` for the cross-compiler, and `wine` to run the result.
 
@@ -457,6 +464,10 @@ Tests are C files that include the implementation, so they can call internal `ct
 - **Anything to do with signals, timing or real terminals:** add to `tests/e2e.py`.
 
 ## Common changes
+
+### Change the API
+
+Update the tutorials as well as the README. To change a tutorial, edit its step programs and the matching code in its text. `make check-tutorial` fails if they disagree, and `make e2e` runs each step.
 
 ### Add a new key
 

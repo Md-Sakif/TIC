@@ -5,6 +5,8 @@
 #   make test-all       the above with gcc, clang and C++, sanitizers, and link modes
 #   make test-link      check every documented way of including the header
 #   make check-readme   compile the examples in README.md
+#   make tutorial       build the tutorial's step programs
+#   make check-tutorial check the tutorial's text matches its code
 #   make e2e            run the tests that use a real pseudo-terminal (POSIX only)
 #   make windows        cross-compile for Windows (needs MinGW)
 #   make test-windows   run the Windows build's unit tests with Wine
@@ -20,19 +22,22 @@ WINE   ?= wine
 PYTHON ?= python3
 
 WARN     = -Wall -Wextra -Wpedantic -Wshadow -Werror
-CFLAGS   = -std=c99 $(WARN) -g -I. -Itests
-CXXFLAGS = -std=c++11 $(WARN) -g -I. -Itests -x c++
+CFLAGS   = -std=c99 $(WARN) -g -I. -Itests -Itutorial/system-monitor
+CXXFLAGS = -std=c++11 $(WARN) -g -I. -Itests -Itutorial/system-monitor -x c++
 SANITIZE = -fsanitize=address,undefined -fno-sanitize-recover=all
 
 BUILD = build
-TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui test_alloc
+TESTS = test_unicode test_buffer test_draw test_render test_parser test_ui test_alloc test_tutorial_stats
 DEMOS = hello keys dashboard widgets
+TUTORIAL = step1 step2 step3 step4 step5 step6 step7 step8 step9
 
-.PHONY: all demos test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
+.PHONY: all demos tutorial check-tutorial test test-all test-gcc test-clang test-cpp test-asan test-link check-readme e2e e2e-windows windows test-windows clean
 
 all: demos
 
 demos: $(DEMOS:%=$(BUILD)/%)
+
+tutorial: $(TUTORIAL:%=$(BUILD)/tutorial/%)
 
 # Every target rebuilds if the header or test helpers change.
 HEADERS = cterm.h tests/test.h tests/vt.h
@@ -40,7 +45,11 @@ HEADERS = cterm.h tests/test.h tests/vt.h
 $(BUILD)/%: demo/%.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_%: tests/test_%.c $(HEADERS) | $(BUILD)
+$(BUILD)/test_%: tests/test_%.c $(HEADERS) tutorial/system-monitor/stats.h | $(BUILD)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/tutorial/%: tutorial/system-monitor/%.c cterm.h tutorial/system-monitor/stats.h
+	@mkdir -p $(BUILD)/tutorial
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD):
@@ -99,8 +108,9 @@ test-all: test-gcc test-clang test-cpp test-asan test-link
 $(BUILD)/e2e_app: tests/e2e_app.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-e2e: demos $(BUILD)/e2e_app
+e2e: demos tutorial $(BUILD)/e2e_app
 	$(PYTHON) tests/e2e.py $(BUILD)/e2e_app
+	$(PYTHON) tests/e2e_tutorial.py $(BUILD)/tutorial
 
 windows:
 	@mkdir -p $(BUILD)/windows
@@ -109,6 +119,9 @@ windows:
 	done
 	@set -e; for d in $(DEMOS); do \
 		$(MINGW) $(CFLAGS) demo/$$d.c -o $(BUILD)/windows/$$d.exe; \
+	done
+	@set -e; for s in $(TUTORIAL); do \
+		$(MINGW) $(CFLAGS) tutorial/system-monitor/$$s.c -o $(BUILD)/windows/$$s.exe; \
 	done
 	$(MINGW) $(CFLAGS) tests/e2e_app.c -o $(BUILD)/windows/e2e_app.exe
 	$(MINGW) $(CFLAGS) tests/e2e_conpty.c -o $(BUILD)/windows/e2e_conpty.exe
@@ -123,6 +136,9 @@ e2e-windows: windows
 
 check-readme:
 	$(PYTHON) tests/check_readme.py $(CC)
+
+check-tutorial:
+	$(PYTHON) tests/check_tutorial.py
 
 clean:
 	rm -rf $(BUILD)

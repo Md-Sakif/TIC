@@ -22,6 +22,8 @@ jobs:
         run: make windows
       - name: README examples
         run: make check-readme
+      - name: Tutorial code matches its text
+        run: make check-tutorial
 
   macos:
     runs-on: macos-latest
