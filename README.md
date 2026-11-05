@@ -359,7 +359,7 @@ The code targets Linux, macOS, the BSDs and Windows 10 or newer, on any terminal
 | macOS (clang) | All tests pass in CI, including in real pseudo-terminals. The test using real `bash` is skipped if the installed version is older than 4.4 |
 | BSDs | Not tested, and not in CI |
 
-The tutorial's system monitor has been run by hand on real Windows (gcc, PowerShell, Windows Terminal), and its display looked right. Mouse input and resizing weren't confirmed in that run. Nobody has yet looked at the output on a real macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
+The tutorial's system monitor has been run by hand on real Windows (gcc, PowerShell, Windows Terminal), and its display, mouse clicks, mouse wheel and resizing all worked. Nobody has yet looked at the output on a real macOS screen. The tests check what the program sends and receives, not how it looks. The CI workflow is in `.github/workflows/ci.yml`.
 
 ## Limitations
 
